@@ -6,3 +6,5 @@ ENV/
 **/pb_data/
 **/*.exe
 **/*.db
+
+.env
