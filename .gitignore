@@ -1,0 +1,8 @@
+# Ignore Python virtual environments
+venv/
+ENV/
+
+# Ignore PocketBase data and temporary files
+**/pb_data/
+**/*.exe
+**/*.db
