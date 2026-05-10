@@ -3,6 +3,28 @@
     <Card>
       <template #title>WebSocket Test (Frontend Companion App)</template>
       <template #content>
+        <h4>Live Transcript:</h4>
+
+        <div class="transcript-box">
+        {{ liveTranscript || 'Waiting for transcription...' }}
+        </div>
+
+        ...
+
+        <div
+            v-if="partialTranscript"
+            class="bg-surface-900 text-white p-4 border-round"
+            >
+            <h3 class="mb-2">Live Transcript</h3>
+
+            <div class="text-lg line-height-3" style="color: black">
+                {{ partialTranscript }}
+            </div>
+        </div>
+
+        <audio ref="audioPlayer" controls class="w-full mt-3"></audio>
+
+        <Divider />
         <div class="flex flex-col gap-4">
           <div class="flex gap-2">
             <InputText v-model="wsUrl" placeholder="WebSocket URL" class="flex-grow" />
@@ -30,12 +52,25 @@
 
             <h4>Received Messages:</h4>
             <div class="bg-surface-800 text-white p-3 border-round max-h-96 overflow-auto">
-              <div v-for="(msg, index) in receivedMessages" :key="index" class="mb-2">
-                <span :class="{'text-primary-400': msg.type === 'sent', 'text-green-400': msg.type === 'received'}">
-                  [{{ msg.timestamp }}] {{ msg.type.toUpperCase() }}:
-                </span>
-                <pre class="ml-4 whitespace-pre-wrap text-sm">{{ msg.content }}</pre>
-              </div>
+            <div class="log-container">
+            <div
+                v-for="(msg, index) in receivedMessages"
+                :key="index"
+                class="log-entry"
+            >
+                <div
+                :class="msg.type === 'sent' ? 'log-sent' : 'log-received'"
+                >
+                [{{ msg.timestamp }}] {{ msg.type.toUpperCase() }}
+                </div>
+
+                <pre class="log-content">{{ msg.content }}</pre>
+            </div>
+
+            <div v-if="!receivedMessages.length">
+                No messages received yet.
+            </div>
+            </div>
               <div v-if="!receivedMessages.length" class="text-surface-500">No messages received yet.</div>
             </div>
           </div>
@@ -61,6 +96,10 @@ const loading = ref(false);
 const connectionError = ref('');
 const messageToSend = ref('');
 const receivedMessages = ref<Array<{ type: 'sent' | 'received'; content: string; timestamp: string }>>([]);
+const liveTranscript = ref('');
+const partialTranscript = ref('');
+const audioChunks = ref<Blob[]>([]);
+const audioPlayer = ref<HTMLAudioElement | null>(null);
 
 function logMessage(type: 'sent' | 'received', content: any) {
   receivedMessages.value.push({
@@ -99,9 +138,59 @@ async function connect() {
       logMessage('received', 'WebSocket connection opened.');
     };
 
-    websocket.value.onmessage = (event) => {
-      logMessage('received', event.data);
+    websocket.value.onmessage = async (event) => {
+        console.log('RAW WS MESSAGE:', event.data);
+        console.log(event.data.type);
+
+        // AUDIO CHUNK
+        if (event.data instanceof Blob) {
+            console.log('AUDIO CHUNK:', event.data.size);
+
+            audioChunks.value.push(event.data);
+
+            return;
+        }
+
+        try {
+            const parsed = JSON.parse(event.data);
+
+            console.log('PARSED WS MESSAGE:', parsed);
+
+            if (parsed.type === 'gemini' && parsed.text) {
+            partialTranscript.value += parsed.text;
+            }
+
+            if (parsed.type === 'turn_complete') {
+            logMessage('received', partialTranscript.value);
+
+            // AUDIO ABSPIELEN
+            playCollectedAudio();
+
+            partialTranscript.value = '';
+            }
+        } catch (err) {
+            console.error('Failed to parse websocket message', err);
+        }
     };
+
+    function playCollectedAudio() {
+        if (!audioChunks.value.length) return;
+
+        // WAV ausprobieren
+        const audioBlob = new Blob(audioChunks.value, {
+            type: 'audio/wav',
+        });
+
+        const audioUrl = URL.createObjectURL(audioBlob);
+
+        if (audioPlayer.value) {
+            audioPlayer.value.src = audioUrl;
+            audioPlayer.value.play();
+        }
+
+        // reset
+        audioChunks.value = [];
+    }
 
     websocket.value.onerror = (event) => {
       console.error('WebSocket error:', event);
