@@ -1,3 +1,5 @@
+# Old Version of the ReadMe: pre gemini Live APi and Websockets!
+
 First we need to start pocketbase inside the backend/pocketbase folder with the command:
 ./pocketbase serve
 
