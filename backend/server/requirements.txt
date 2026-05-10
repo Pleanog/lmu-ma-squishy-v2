@@ -1,5 +1,6 @@
-requests
-gtts
-python-dotenv==1.0.0
-pocketbase
+fastapi
+uvicorn
 google-genai
+websockets
+python-dotenv
+python-multipart

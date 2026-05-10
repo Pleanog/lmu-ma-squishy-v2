@@ -1,90 +1,197 @@
-import os
-import time
+import asyncio
+import base64
+import json
 import logging
-import threading
-import mimetypes
+import os
+
 from dotenv import load_dotenv
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
+from gemini_live import GeminiLive
+from twilio_handler import TwilioHandler
 
-from services.pb_service import PocketBaseService
-from services.llm_service import LLMService
-from services.tts_service import TTSService
-from models.types import MessageRecord
-
-# Setup
+# Load environment variables
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
-class BrainOrchestrator:
-    def __init__(self):
-        self.pb = PocketBaseService(
-            os.getenv("PB_URL"), 
-            os.getenv("PB_ADMIN_EMAIL"), 
-            os.getenv("PB_ADMIN_PASS")
-        )
-        self.llm = LLMService(os.getenv("GEMINI_API_KEY"))
-        self.tts = TTSService()
+# Configure logging - DEBUG for our modules, INFO for everything else
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("gemini_live").setLevel(logging.DEBUG)
+logging.getLogger(__name__).setLevel(logging.DEBUG)
+logger = logging.getLogger(__name__)
 
-    def handle_message(self, pb_event):
-        # Filter logic
-        if pb_event.action != 'create': return
-        if pb_event.record.sender != 'user': return
+# Configuration
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MODEL = os.getenv("MODEL", "gemini-3.1-flash-live-preview")
 
-        # Convert to typed object
-        record = MessageRecord.from_pb_record(pb_event.record)
+# Twilio config (optional — only needed for phone call integration)
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_APP_HOST = os.getenv("TWILIO_APP_HOST")
 
-        # Threaded processing
-        threading.Thread(target=self._worker, args=(record,), daemon=True).start()
+# Initialize FastAPI
+app = FastAPI()
 
-    def _worker(self, record: MessageRecord):
-        logging.info(f"📩 Processing {record.id}")
-        audio_path = None
-        audio_bytes = None
-        reply_audio_path = None
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# Serve static files
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+
+@app.get("/")
+async def root():
+    return FileResponse("frontend/index.html")
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for Gemini Live."""
+    await websocket.accept()
+
+    logger.info("WebSocket connection accepted")
+
+    audio_input_queue = asyncio.Queue()
+    video_input_queue = asyncio.Queue()
+    text_input_queue = asyncio.Queue()
+
+    async def audio_output_callback(data):
+        await websocket.send_bytes(data)
+
+    async def audio_interrupt_callback():
+        # The event queue handles the JSON message, but we might want to do something else here
+        pass
+
+    gemini_client = GeminiLive(
+        api_key=GEMINI_API_KEY, model=MODEL, input_sample_rate=16000
+    )
+
+    async def receive_from_client():
         try:
-            # 1. Download Audio (if any)
-            if record.audio:
-                audio_path = self.pb.download_audio(record)
-                if audio_path:
-                    with open(audio_path, "rb") as f:
-                        audio_bytes = f.read()
-            
-            # 2. Generate Text Reply
-            # Detect mime type or default to wav
-            mime = mimetypes.guess_type(audio_path)[0] if audio_path else "audio/wav"
-            
-            ai_text = self.llm.generate_reply(
-                text=record.content,
-                audio_bytes=audio_bytes,
-                mime_type=mime,
-                metadata=record.metadata
-            )
-            logging.info(f"🤖 Output: {ai_text}")
+            while True:
+                message = await websocket.receive()
 
-            # 3. Generate Audio Reply
-            reply_audio_path = self.tts.text_to_speech(ai_text)
+                if message.get("bytes"):
+                    await audio_input_queue.put(message["bytes"])
+                elif message.get("text"):
+                    text = message["text"]
+                    try:
+                        payload = json.loads(text)
+                        if isinstance(payload, dict) and payload.get("type") == "image":
+                            logger.info(f"Received image chunk from client: {len(payload['data'])} base64 chars")
+                            image_data = base64.b64decode(payload["data"])
+                            await video_input_queue.put(image_data)
+                            continue
+                    except json.JSONDecodeError:
+                        pass
 
-            # 4. Upload Result
-            self.pb.upload_ai_response(
-                conversation_id=record.conversation,
-                text=ai_text,
-                audio_path=reply_audio_path
-            )
-
+                    await text_input_queue.put(text)
+        except WebSocketDisconnect:
+            logger.info("WebSocket disconnected")
         except Exception as e:
-            logging.error(f"Worker crashed: {e}")
-        
-        finally:
-            # Cleanup
-            if audio_path and os.path.exists(audio_path): os.remove(audio_path)
-            if reply_audio_path and os.path.exists(reply_audio_path): os.remove(reply_audio_path)
+            logger.error(f"Error receiving from client: {e}")
 
-    def start(self):
-        logging.info("🧠 Brain started. Waiting for messages...")
-        # Use lambda to keep the reference working as observed previously
-        self.pb.subscribe_messages(lambda e: self.handle_message(e))
-        
-        while True: time.sleep(1)
+    receive_task = asyncio.create_task(receive_from_client())
+
+    async def run_session():
+        async for event in gemini_client.start_session(
+            audio_input_queue=audio_input_queue,
+            video_input_queue=video_input_queue,
+            text_input_queue=text_input_queue,
+            audio_output_callback=audio_output_callback,
+            audio_interrupt_callback=audio_interrupt_callback,
+        ):
+            if event:
+                # Forward events (transcriptions, etc) to client
+                await websocket.send_json(event)
+
+    try:
+        await run_session()
+    except Exception as e:
+        import traceback
+        logger.error(f"Error in Gemini session: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+    finally:
+        receive_task.cancel()
+        # Ensure websocket is closed if not already
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+# ─── Twilio Endpoints ─────────────────────────────────────────────────────────
+
+@app.post("/twilio/inbound")
+async def twilio_inbound():
+    """Handles inbound Twilio calls. Returns TwiML to open a media stream."""
+    host = TWILIO_APP_HOST or "localhost:8000"
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>Connecting to Gemini Live.</Say>
+    <Connect>
+        <Stream url="wss://{host}/twilio/stream" />
+    </Connect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/twilio/outbound")
+async def twilio_outbound(
+    to_number: str = Query(..., description="Destination phone number (E.164 format)"),
+    from_number: str = Query(..., description="Your Twilio phone number (E.164 format)"),
+):
+    """Initiates an outbound Twilio call that connects to Gemini Live."""
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        return {"error": "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set in environment"}
+    if not TWILIO_APP_HOST:
+        return {"error": "TWILIO_APP_HOST must be set in environment"}
+
+    from twilio.rest import Client as TwilioClient
+
+    client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    twiml = f"""<Response>
+    <Say>Connecting to Gemini Live.</Say>
+    <Connect>
+        <Stream url="wss://{TWILIO_APP_HOST}/twilio/stream" />
+    </Connect>
+</Response>"""
+
+    call = client.calls.create(
+        to=to_number,
+        from_=from_number,
+        twiml=twiml,
+    )
+    logger.info(f"Outbound call initiated: {call.sid}")
+    return {"callSid": call.sid, "status": call.status}
+
+
+@app.websocket("/twilio/stream")
+async def twilio_stream(websocket: WebSocket):
+    """WebSocket endpoint for Twilio Media Streams."""
+    await websocket.accept()
+    logger.info("Twilio media stream WebSocket connected")
+
+    handler = TwilioHandler(gemini_api_key=GEMINI_API_KEY, model=MODEL)
+    try:
+        await handler.handle_media_stream(websocket)
+    except Exception as e:
+        logger.error(f"Twilio stream error: {e}", exc_info=True)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        logger.info("Twilio media stream WebSocket closed")
+
 
 if __name__ == "__main__":
-    BrainOrchestrator().start()
+    import uvicorn
+
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

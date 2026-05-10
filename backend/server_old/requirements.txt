@@ -1,0 +1,5 @@
+requests
+gtts
+python-dotenv==1.0.0
+pocketbase
+google-genai
