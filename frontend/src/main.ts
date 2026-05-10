@@ -9,6 +9,8 @@ import Aura from '@primevue/themes/aura';
 import 'primeicons/primeicons.css';
 import { definePreset } from '@primeuix/themes';
 
+import 'primeflex/primeflex.css'
+
 import * as LucideIcons from 'lucide-vue-next';
 
 import Button from "primevue/button";

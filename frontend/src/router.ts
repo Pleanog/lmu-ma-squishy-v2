@@ -5,6 +5,7 @@ import LoginView from './views/LoginView.vue';
 import RegisterView from './views/RegisterView.vue';
 import DashboardView from './views/DashboardView.vue';
 import SettingsView from './views/SettingsView.vue';
+import WebSocketTestView from './views/WebSocketTestView.vue';
 
 
 const router = createRouter({
@@ -15,6 +16,7 @@ const router = createRouter({
     { path: '/register', component: RegisterView },
     { path: '/dashboard', name: 'dashboard', component: DashboardView, meta: { requiresAuth: true } },
     { path: '/settings', name: 'settings', component: SettingsView, meta: { requiresAuth: true } },
+    { path: '/ws-test', name: 'ws-test', component: WebSocketTestView, meta: { requiresAuth: true } },
   ],
 });
 
@@ -25,7 +27,7 @@ router.beforeEach((to, _from, next) => {
   if (to.meta.requiresAuth && !isAuthenticated) {
     next('/login');
   } else if ((to.path === '/login' || to.path === '/register') && isAuthenticated) {
-    next('/dashboard'); 
+    next('/dashboard');
   } else {
     next();
   }
