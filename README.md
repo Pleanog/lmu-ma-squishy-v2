@@ -6,6 +6,8 @@ Then we start the python server that handles the communication with the llm. it 
 
  and then run the brain aka server with:
  python brain.py
+ oder mittlerweile
+ python main.py
 
  next we start the frontend inside the frontend folder with 
  npm run dev

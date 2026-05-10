@@ -15,6 +15,20 @@ import Button from "primevue/button";
 import InputText from "primevue/inputtext";
 import DatePicker from 'primevue/datepicker';
 import FileUpload from 'primevue/fileupload';
+import Tooltip from 'primevue/tooltip';
+import Dropdown from 'primevue/dropdown';
+import InputSwitch from 'primevue/inputswitch';
+import OverlayPanel from 'primevue/overlaypanel';
+import ProgressSpinner from 'primevue/progressspinner';
+import Slider from "primevue/slider";
+import Image from "primevue/image";
+
+// Custom components
+import ChatBubble from "./components/ChatBubble.vue";
+import MessageInput from "./components/MessageInput.vue";
+import MetadataSelector from "./components/MetadataSelector.vue";
+import MediaDisplay from './components/MediaDisplay.vue';
+
 
 const MyPreset = definePreset(Aura,
 	{
@@ -87,5 +101,17 @@ app.component('Button', Button);
 app.component('InputText', InputText);
 app.component('DatePicker', DatePicker);
 app.component('FileUpload', FileUpload);
+app.directive('tooltip', Tooltip);
+app.component('Dropdown', Dropdown);
+app.component('InputSwitch', InputSwitch);
+app.component('OverlayPanel', OverlayPanel);
+app.component('ProgressSpinner', ProgressSpinner);
+app.component('Slider', Slider);
+app.component('Image', Image);
 
+// Custom components
+app.component('ChatBubble', ChatBubble);
+app.component('MessageInput', MessageInput);
+app.component('MetadataSelector', MetadataSelector);
+app.component('MediaDisplay', MediaDisplay);
 app.mount('#app');

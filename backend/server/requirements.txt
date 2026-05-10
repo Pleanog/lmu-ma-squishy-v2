@@ -1,3 +1,5 @@
+requests
+gtts
 python-dotenv==1.0.0
-pocketbase==0.10.0
-google-genai=1.37.0
+pocketbase
+google-genai

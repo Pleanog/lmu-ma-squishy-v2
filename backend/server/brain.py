@@ -160,9 +160,11 @@ class AIBrain:
             if audio_input_path and os.path.exists(audio_input_path):
                 os.remove(audio_input_path)
             if audio_output_path:
-                try: files_payload.get('audio')[1].close()
-                except: pass
-                if os.path.exists(audio_output_path): os.remove(audio_output_path)
+                # Ensure to close the file handle if it was opened
+                if 'audio' in payload_data and hasattr(payload_data['audio'], 'close'):
+                    payload_data['audio'].close()
+                if os.path.exists(audio_output_path):
+                    os.remove(audio_output_path)
 
     def start(self):
         logging.info("👂 Listening for messages...")
