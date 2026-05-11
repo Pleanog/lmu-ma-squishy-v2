@@ -3,7 +3,7 @@
     <Card class="gemini-live-card">
       <template #title>
         <div class="flex justify-content-between align-items-center">
-          <h1>Gemini Live API Demo</h1>
+          <h1>Squishy 2.0</h1>
           <div class="flex align-items-center gap-2">
             <Tag :value="status" :severity="statusSeverity" />
           </div>
@@ -12,16 +12,6 @@
       <template #content>
         <!-- Authentication Section -->
         <div v-if="!isConnected && !sessionEnded" class="p-4 bg-gray-100 border-round text-center">
-          <div class="mb-4 p-3 bg-white border-round text-left">
-            <h3 class="mt-0 mb-2">Features Enabled:</h3>
-            <ul class="ml-4 mb-3 p-0 list-disc">
-              <li><strong>Native Audio:</strong> Low latency voice interaction</li>
-              <li><strong>Multilingual:</strong> Speak in different languages</li>
-            </ul>
-            <p class="text-sm text-color-secondary">
-              <em>Note: When you connect, the app sends a text message to Gemini instructing it to introduce itself and these features.</em>
-            </p>
-          </div>
           <p class="mb-3">Click below to connect.</p>
           <Button label="Connect" icon="pi pi-bolt" :loading="connectLoading" @click="handleConnect" />
         </div>
@@ -39,7 +29,9 @@
               <div v-if="showVideoPlaceholder" class="video-placeholder flex align-items-center justify-content-center text-white text-xl">
                 Start camera to send video
               </div>
+              <!-- videoPreview ref is bound here -->
               <video ref="videoPreview" autoplay playsinline muted class="w-full h-full object-fit-cover"></video>
+              <!-- videoCanvas ref is bound here -->
               <canvas ref="videoCanvas" style="display: none;"></canvas>
             </div>
 
@@ -51,15 +43,15 @@
                 @click="toggleMic"
               />
               <Button
-                :label="mediaHandler.videoStream.value && mediaHandler.isCameraActive.value ? 'Stop Camera' : 'Start Camera'"
-                :icon="mediaHandler.videoStream.value && mediaHandler.isCameraActive.value ? 'pi pi-video-slash' : 'pi pi-video'"
-                :severity="mediaHandler.videoStream.value && mediaHandler.isCameraActive.value ? 'danger' : undefined"
+                :label="mediaHandler.isCameraActive.value ? 'Stop Camera' : 'Start Camera'"
+                :icon="mediaHandler.isCameraActive.value ? 'pi pi-video-slash' : 'pi pi-video'"
+                :severity="mediaHandler.isCameraActive.value ? 'danger' : undefined"
                 @click="toggleCamera"
               />
               <Button
-                :label="mediaHandler.videoStream.value && mediaHandler.isScreenActive.value ? 'Stop Sharing' : 'Share Screen'"
-                :icon="mediaHandler.videoStream.value && mediaHandler.isScreenActive.value ? 'pi pi-desktop' : 'pi pi-share-alt'"
-                :severity="mediaHandler.videoStream.value && mediaHandler.isScreenActive.value ? 'danger' : undefined"
+                :label="mediaHandler.isScreenActive.value ? 'Stop Sharing' : 'Share Screen'"
+                :icon="mediaHandler.isScreenActive.value ? 'pi pi-desktop' : 'pi pi-share-alt'"
+                :severity="mediaHandler.isScreenActive.value ? 'danger' : undefined"
                 @click="toggleScreenShare"
               />
               <Button label="Disconnect" icon="pi pi-times" severity="danger" @click="handleDisconnect" />
@@ -89,11 +81,12 @@ import Card from 'primevue/card';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import Tag from 'primevue/tag';
-import { MediaHandler } from './../utils/media-handler';
-import { GeminiClient } from './../utils/gemini-client';
+// Import the TypeScript versions
+import { MediaHandler } from '../utils/media-handler';
+import { GeminiClient } from '../utils/gemini-client';
 
 // Reactive state
-const wsUrl = ref('ws://127.0.0.1:8000/ws');
+const wsUrl = ref('ws://127.0.0.1:8000/ws'); // Keep this reactive as requested
 const status = ref('Disconnected');
 const isConnected = ref(false);
 const connectLoading = ref(false);
@@ -108,17 +101,18 @@ const chatLogRef = ref<HTMLElement | null>(null);
 
 // Utility instances
 const mediaHandler = new MediaHandler();
-let geminiClient: GeminiClient;
+let geminiClient: GeminiClient | null = null; // Initialize as null
 
 // Computed properties for UI
 const statusSeverity = computed(() => {
   if (status.value === 'Connected') return 'success';
   if (status.value === 'Disconnected') return 'info';
-  if (status.value === 'Connection Error') return 'danger';
+  if (status.value === 'Connection Error' || status.value.includes('Failed')) return 'danger';
   return 'warning';
 });
 
 const showVideoPlaceholder = computed(() => {
+  // Use the reactive videoStream from mediaHandler
   return !mediaHandler.videoStream.value;
 });
 
@@ -126,20 +120,20 @@ const showVideoPlaceholder = computed(() => {
 let currentGeminiMessageIndex: number | null = null;
 let currentUserMessageIndex: number | null = null;
 
-function appendMessage(type: 'user' | 'gemini', text: string) {
+function appendMessage(type: 'user' | 'gemini', text: string): number {
   chatMessages.value.push({ type, text });
   scrollToChatBottom();
   return chatMessages.value.length - 1; // Return index for updates
 }
 
-function updateMessage(index: number, newText: string) {
+function updateMessage(index: number, newText: string): void {
   if (chatMessages.value[index]) {
     chatMessages.value[index].text += newText;
     scrollToChatBottom();
   }
 }
 
-function scrollToChatBottom() {
+function scrollToChatBottom(): void {
   nextTick(() => {
     if (chatLogRef.value) {
       chatLogRef.value.scrollTop = chatLogRef.value.scrollHeight;
@@ -147,7 +141,7 @@ function scrollToChatBottom() {
   });
 }
 
-function handleJsonMessage(msg: any) {
+function handleJsonMessage(msg: any): void {
   if (msg.type === "interrupted") {
     mediaHandler.stopAudioPlayback();
     currentGeminiMessageIndex = null;
@@ -155,13 +149,13 @@ function handleJsonMessage(msg: any) {
   } else if (msg.type === "turn_complete") {
     currentGeminiMessageIndex = null;
     currentUserMessageIndex = null;
-  } else if (msg.type === "user") {
+  } else if (msg.type === "user" && msg.text) { // Added check for msg.text
     if (currentUserMessageIndex !== null) {
       updateMessage(currentUserMessageIndex, msg.text);
     } else {
       currentUserMessageIndex = appendMessage("user", msg.text);
     }
-  } else if (msg.type === "gemini") {
+  } else if (msg.type === "gemini" && msg.text) { // Added check for msg.text
     if (currentGeminiMessageIndex !== null) {
       updateMessage(currentGeminiMessageIndex, msg.text);
     } else {
@@ -179,11 +173,16 @@ const geminiClientCallbacks = {
     connectLoading.value = false;
 
     // Send hidden instruction
-    geminiClient.sendText(
-      `System: Introduce yourself as a demo of the Gemini Live API.
-       Suggest playing with features like the native audio for accents and multilingual support.
-       Keep the intro concise and friendly.`
-    );
+    if (geminiClient) {
+      geminiClient.sendText(
+        `System: Introduce yourself as Squishy 2.0 a fuzzy and tangible AI that lives inside a plush pig.
+         Suggest asking questions or getting started with the lab study that the user is participating in.
+         Keep the intro concise and friendly.
+         Background information (nicht direkt erwähnen): This demo is part of a research study at the Munich University (LMU also knows as Ludwig Maximilian University) with the department of Human-Computer Interaction on user interactions with embodied AI agents. The study compares tangible embodies AI vs 'classical' interaction with an Ai via a chat interface. You are currently in the tangible embodied AI condition, where users can interact with you via voice, and you can respond in kind. You can du function calls with the provided tools to controll some aspects of the hardware like making sounds or letting leds light up
+         Personallity: You speak a slight bavarian accent ans initially answer in german please - if the user starts to talk or chat about stuff that does not seem like it is relevant to the study please answer short and funny but try to get back to the study.
+         `
+        );
+    }
   },
   onMessage: (event: MessageEvent) => {
     if (typeof event.data === "string") {
@@ -193,7 +192,7 @@ const geminiClientCallbacks = {
       } catch (e) {
         console.error("Parse error:", e);
       }
-    } else {
+    } else if (event.data instanceof ArrayBuffer) { // Ensure it's an ArrayBuffer
       mediaHandler.playAudio(event.data);
     }
   },
@@ -211,12 +210,14 @@ const geminiClientCallbacks = {
 };
 
 // UI Control Handlers
-async function handleConnect() {
+async function handleConnect(): Promise<void> {
   connectLoading.value = true;
   status.value = "Connecting...";
 
   try {
     await mediaHandler.initializeAudio(); // Initialize audio context on user gesture
+
+    // Pass the reactive wsUrl value from the component
     geminiClient = new GeminiClient({ wsUrl: wsUrl.value, ...geminiClientCallbacks });
     geminiClient.connect();
   } catch (error: any) {
@@ -226,14 +227,14 @@ async function handleConnect() {
   }
 }
 
-function handleDisconnect() {
+function handleDisconnect(): void {
   if (geminiClient) {
     geminiClient.disconnect();
   }
 }
 
-async function toggleMic() {
-  if (mediaHandler.isRecording.value) {
+async function toggleMic(): Promise<void> {
+  if (mediaHandler.isRecording.value) { // Access reactive value
     mediaHandler.stopAudio();
   } else {
     try {
@@ -248,57 +249,79 @@ async function toggleMic() {
   }
 }
 
-async function toggleCamera() {
-  if (mediaHandler.videoStream.value && mediaHandler.isCameraActive.value) {
+async function toggleCamera(): Promise<void> {
+  if (!videoPreview.value || !videoCanvas.value) {
+      console.error("Video elements not ready.");
+      alert("Video preview not available.");
+      return;
+  }
+
+  // Check if camera is currently active
+  if (mediaHandler.isCameraActive.value) { // Access reactive value
     mediaHandler.stopVideo();
+    videoPreview.value.srcObject = null; // Manually clear srcObject
   } else {
     // If another stream is active (e.g. Screen), stop it first
-    if (mediaHandler.videoStream.value) {
+    if (mediaHandler.isScreenActive.value) { // Access reactive value
       mediaHandler.stopVideo();
+      videoPreview.value.srcObject = null; // Manually clear srcObject
     }
 
     try {
-      await mediaHandler.startVideo(videoPreview.value!, videoCanvas.value!, (base64Data) => {
+      await mediaHandler.startVideo(videoPreview.value, (base64Data) => {
         if (geminiClient && geminiClient.isConnected()) {
           geminiClient.sendImage(base64Data);
         }
       });
     } catch (e) {
       alert("Could not access camera");
+      // Ensure videoPreview srcObject is cleared if camera fails to start
+      if (videoPreview.value) videoPreview.value.srcObject = null;
     }
   }
 }
 
-async function toggleScreenShare() {
-  if (mediaHandler.videoStream.value && mediaHandler.isScreenActive.value) {
+async function toggleScreenShare(): Promise<void> {
+  if (!videoPreview.value || !videoCanvas.value) {
+      console.error("Video elements not ready.");
+      alert("Video preview not available.");
+      return;
+  }
+
+  // Check if screen share is currently active
+  if (mediaHandler.isScreenActive.value) { // Access reactive value
     mediaHandler.stopVideo();
+    videoPreview.value.srcObject = null; // Manually clear srcObject
   } else {
     // If another stream is active (e.g. Camera), stop it first
-    if (mediaHandler.videoStream.value) {
+    if (mediaHandler.isCameraActive.value) { // Access reactive value
       mediaHandler.stopVideo();
+      videoPreview.value.srcObject = null; // Manually clear srcObject
     }
 
     try {
       await mediaHandler.startScreen(
-        videoPreview.value!,
-        videoCanvas.value!,
+        videoPreview.value,
         (base64Data) => {
           if (geminiClient && geminiClient.isConnected()) {
             geminiClient.sendImage(base64Data);
-        }
+          }
         },
         () => {
           // onEnded callback (e.g. user stopped sharing from browser)
           mediaHandler.stopVideo(); // Ensure video state is reset
+          if (videoPreview.value) videoPreview.value.srcObject = null; // Manually clear srcObject
         }
       );
     } catch (e) {
       alert("Could not share screen");
+      // Ensure videoPreview srcObject is cleared if screen share fails to start
+      if (videoPreview.value) videoPreview.value.srcObject = null;
     }
   }
 }
 
-function sendText() {
+function sendText(): void {
   const text = textInput.value;
   if (text && geminiClient && geminiClient.isConnected()) {
     geminiClient.sendText(text);
@@ -307,7 +330,7 @@ function sendText() {
   }
 }
 
-function resetUI() {
+function resetUI(): void {
   isConnected.value = false;
   sessionEnded.value = false;
   connectLoading.value = false;
@@ -317,30 +340,29 @@ function resetUI() {
 
   mediaHandler.stopAudio();
   mediaHandler.stopVideo();
+  if (videoPreview.value) videoPreview.value.srcObject = null; // Manually clear srcObject
 
   if (geminiClient) {
     geminiClient.disconnect(); // Ensure internal client state is reset
+    geminiClient = null; // Clear the client instance
   }
 }
 
-function showSessionEnd() {
+function showSessionEnd(): void {
   sessionEnded.value = true;
   mediaHandler.stopAudio();
   mediaHandler.stopVideo();
+  if (videoPreview.value) videoPreview.value.srcObject = null; // Manually clear srcObject
 }
 
 // Lifecycle Hooks
-onMounted(() => {
-  // Initialize GeminiClient here to ensure wsUrl is reactive and available if it were to change.
-  // However, for this example, we re-initialize on `connect`.
-});
-
 onUnmounted(() => {
   if (geminiClient) {
     geminiClient.disconnect();
   }
   mediaHandler.stopAudio();
   mediaHandler.stopVideo();
+  if (videoPreview.value) videoPreview.value.srcObject = null;
 });
 </script>
 
@@ -358,6 +380,7 @@ onUnmounted(() => {
 .video-container {
   aspect-ratio: 16/9;
   position: relative;
+  background-color: var(--surface-900); /* PrimeVue dark surface */
 }
 
 .video-placeholder {
@@ -367,7 +390,6 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   z-index: 1;
-  background-color: var(--surface-900); /* PrimeVue dark surface */
 }
 
 video {
