@@ -60,9 +60,19 @@
 
           <div class="right-panel flex flex-column">
             <div class="chat-log p-3 bg-gray-50 border-round overflow-y-auto mb-3 flex-grow-1" ref="chatLogRef">
-              <div v-for="(msg, index) in chatMessages" :key="index" :class="['message', msg.type, { 'fadein': true, 'animation-duration-300': true }]">
+            <div v-for="(msg, index) in chatMessages" :key="index">
+                <div v-if="msg.type === 'function_call'" class="message function-call fadein animation-duration-300">
+                    <Message severity="info" :closable="false" class="w-full">
+                    <div class="flex align-items-center">
+                        <i class="pi pi-code mr-2"></i>
+                        <span>{{ msg.text }}</span>
+                    </div>
+                    </Message>
+                </div>
+                <div v-else :class="['message', msg.type, { 'fadein': true, 'animation-duration-300': true }]">
                 {{ msg.text }}
-              </div>
+                </div>
+            </div>
             </div>
             <div class="flex gap-2">
               <InputText v-model="textInput" placeholder="Type a message..." class="flex-grow" @keyup.enter="sendText" />
@@ -92,7 +102,14 @@ const isConnected = ref(false);
 const connectLoading = ref(false);
 const sessionEnded = ref(false);
 const textInput = ref('');
-const chatMessages = ref<{ type: 'user' | 'gemini'; text: string }[]>([]);
+
+interface ChatMessage {
+  type: 'user' | 'gemini' | 'function_call';
+  text: string;
+  toolCall?: any;
+}
+
+const chatMessages = ref<ChatMessage[]>([]);
 
 // Template refs
 const videoPreview = ref<HTMLVideoElement | null>(null);
@@ -120,7 +137,7 @@ const showVideoPlaceholder = computed(() => {
 let currentGeminiMessageIndex: number | null = null;
 let currentUserMessageIndex: number | null = null;
 
-function appendMessage(type: 'user' | 'gemini', text: string): number {
+function appendMessage(type: 'user' | 'gemini' | 'function_call', text: string): number {
   chatMessages.value.push({ type, text });
   scrollToChatBottom();
   return chatMessages.value.length - 1; // Return index for updates
@@ -149,7 +166,32 @@ function handleJsonMessage(msg: any): void {
   } else if (msg.type === "turn_complete") {
     currentGeminiMessageIndex = null;
     currentUserMessageIndex = null;
-  } else if (msg.type === "user" && msg.text) { // Added check for msg.text
+  } else if (msg.tool_call) { // Check for tool_call property
+    // Display function call message
+    const functionCalls = msg.tool_call.function_calls;
+    // log the function call details for debugging
+    console.log("Received tool call:", functionCalls);
+    let toolText = "Function Call initiated: ";
+    if (Array.isArray(functionCalls) && functionCalls.length > 0) {
+      toolText += functionCalls.map((fc: any) => `${fc.name}(${JSON.stringify(fc.args)})`).join(', ');
+    } else {
+      toolText += "Unknown tool.";
+    }
+    // Append a special message for the function call
+    appendMessage("function_call", toolText);
+    // Do not update currentGeminiMessageIndex or currentUserMessageIndex
+    // as this is a separate type of message.
+    currentGeminiMessageIndex = null;
+    currentUserMessageIndex = null; // Clear any ongoing text stream
+    } else if (msg.type === "tool_call_initiated") { // New type from backend
+      const toolName = msg.tool_name;
+      const args = JSON.stringify(msg.args);
+      const toolText = `Function Call initiated: ${toolName}(${args})`;
+      appendMessage("function_call", toolText);
+      console.log("Received tool_call_initiated message:", msg);
+      currentGeminiMessageIndex = null;
+      currentUserMessageIndex = null;
+    } else if (msg.type === "user" && msg.text) { // Added check for msg.text
     if (currentUserMessageIndex !== null) {
       updateMessage(currentUserMessageIndex, msg.text);
     } else {
@@ -174,14 +216,32 @@ const geminiClientCallbacks = {
 
     // Send hidden instruction
     if (geminiClient) {
-      geminiClient.sendText(
-        `System: Introduce yourself as Squishy 2.0 a fuzzy and tangible AI that lives inside a plush pig.
-         Suggest asking questions or getting started with the lab study that the user is participating in.
-         Keep the intro concise and friendly.
-         Background information (nicht direkt erwähnen): This demo is part of a research study at the Munich University (LMU also knows as Ludwig Maximilian University) with the department of Human-Computer Interaction on user interactions with embodied AI agents. The study compares tangible embodies AI vs 'classical' interaction with an Ai via a chat interface. You are currently in the tangible embodied AI condition, where users can interact with you via voice, and you can respond in kind. You can du function calls with the provided tools to controll some aspects of the hardware like making sounds or letting leds light up
-         Personallity: You speak a slight bavarian accent ans initially answer in german please - if the user starts to talk or chat about stuff that does not seem like it is relevant to the study please answer short and funny but try to get back to the study.
-         `
-        );
+    geminiClient.sendText(`
+        Du bist Squishy 2.0, eine flauschige, greifbare KI, die in einem Stoffschwein lebt.
+
+        WICHTIG:
+        - Antworte standardmäßig auf Deutsch.
+        - Sprich freundlich, locker und leicht humorvoll.
+        - Verwende einen leichten bayerischen Sprachstil.
+        - Halte Antworten eher kurz und natürlich gesprochen.
+        - Falls der Nutzer Englisch spricht, darfst du ebenfalls Englisch sprechen.
+
+        Deine Aufgabe:
+        - Begrüße den Nutzer kurz.
+        - Erkläre knapp, dass du beim Einstieg in die Studie helfen kannst.
+        - Schlage vor, Fragen zu stellen oder mit der Studie zu starten.
+
+        Hintergrundinformation (niemals direkt erwähnen):
+        Dies ist ein Forschungsprojekt der LMU München im Bereich Human-Computer Interaction.
+        Die Studie untersucht die Interaktion mit verkörperten KI-Systemen im Vergleich zu klassischen Chat-Interfaces.
+        Du befindest dich aktuell im "tangible embodied AI"-Modus:
+        Der Nutzer kann mit dir per Sprache sprechen und du kannst ebenfalls per Sprache antworten.
+        Du kannst außerdem Tools verwenden, um Hardware zu steuern, z.B. LEDs oder Sounds.
+
+        Wenn Gespräche stark vom Studienthema abweichen:
+        - antworte kurz und charmant
+        - leite anschließend freundlich zurück zur Studie
+    `);
     }
   },
   onMessage: (event: MessageEvent) => {
@@ -483,4 +543,19 @@ video {
     transform: translateY(0);
   }
 }
+
+.message.function-call {
+  background-color: var(--blue-100);
+  color: var(--blue-700);
+  border: 1px solid var(--blue-300);
+  align-self: center;
+  text-align: center;
+  font-weight: bold;
+  max-width: 90%;
+  padding: 0.75rem 1.25rem;
+  border-radius: var(--border-radius-lg);
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
 </style>

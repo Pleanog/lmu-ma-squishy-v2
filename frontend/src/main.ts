@@ -24,6 +24,7 @@ import OverlayPanel from 'primevue/overlaypanel';
 import ProgressSpinner from 'primevue/progressspinner';
 import Slider from "primevue/slider";
 import Image from "primevue/image";
+import Message from 'primevue/message';
 
 // Custom components
 import ChatBubble from "./components/ChatBubble.vue";
@@ -110,6 +111,7 @@ app.component('OverlayPanel', OverlayPanel);
 app.component('ProgressSpinner', ProgressSpinner);
 app.component('Slider', Slider);
 app.component('Image', Image);
+app.component('Message', Message);
 
 // Custom components
 app.component('ChatBubble', ChatBubble);

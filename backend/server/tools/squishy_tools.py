@@ -1,3 +1,4 @@
+# tools/squishy_tools.py
 from google.genai import types
 
 SET_LED_TOOL = types.Tool(
@@ -6,12 +7,13 @@ SET_LED_TOOL = types.Tool(
             name="set_led_color",
             description="Sets the color of Squishy's LEDs.",
             parameters=types.Schema(
-                    type="OBJECT",
-                    properties={
-                        "color": types.Schema(type="STRING", description="The color name (e.g., red, blue, green, happy_yellow).")
-                    },
-                    required=["color"]
-            )
+                type="OBJECT",
+                properties={
+                    "color": types.Schema(type="STRING", description="The color name (e.g., red, blue, green, happy_yellow).")
+                },
+                required=["color"]
+            ),
+            behavior="NON_BLOCKING"
         )
     ]
 )
@@ -34,7 +36,6 @@ PLAY_SOUND_TOOL = types.Tool(
         )
     ]
 )
-
 
 squishy_tools = [
     SET_LED_TOOL,
