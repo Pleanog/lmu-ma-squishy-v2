@@ -1,72 +1,55 @@
-import time
-import logging
-import os
-from dotenv import load_dotenv
+import asyncio
+from client.websocket_client import WebSocketClient
+from client.audio_handler import AudioHandler
+from client.hardware_manager import HardwareManager
+from config import BACKEND_WS_URL, CLIENT_CAPABILITIES
 
-from modules.network import NetworkClient
-from modules.sensors import SensorManager
-from modules.audio import AudioManager
+async def main():
+    print("Starting Squishy Pi Client...")
 
-# Setup
-load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%H:%M:%S')
+    # Initialisiere HardwareManager
+    hardware_manager = HardwareManager()
+    # Initialisiere AudioHandler
+    audio_handler = AudioHandler()
 
-class SquishyHardware:
-    def __init__(self):
-        # 1. Init Modules
-        self.sensors = SensorManager()
-        self.audio = AudioManager()
-        self.pb = NetworkClient(
-            os.getenv("PB_URL"),
-            os.getenv("HARDWARE_USER_EMAIL"),
-            os.getenv("HARDWARE_USER_PASS")
-        )
+    # Initialisiere WebSocketClient
+    # on_message_from_backend wird von websocket_client gerufen, wenn Daten vom Backend kommen
+    # on_audio_data_for_backend wird von audio_handler gerufen, wenn Mic-Daten bereit sind
+    # on_sensor_event_for_backend wird von hardware_manager gerufen, wenn Sensor-Event auftritt
+    websocket_client = WebSocketClient(
+        ws_url=BACKEND_WS_URL,
+        client_type="hardware",
+        capabilities=CLIENT_CAPABILITIES,
+        on_message_from_backend=audio_handler.handle_backend_message, # Audio/Text vom Backend
+        on_audio_data_for_backend=audio_handler.send_audio_to_websocket, # Callbacks müssen sich noch registrieren
+        on_sensor_event_for_backend=hardware_manager.send_sensor_event_to_websocket # Callbacks müssen sich noch registrieren
+    )
+    
+    # AudioHandler und HardwareManager müssen wissen, wie sie Daten senden
+    audio_handler.set_websocket_sender(websocket_client.send_audio_chunk)
+    hardware_manager.set_websocket_sender(websocket_client.send_sensor_event)
+    
+    # WebSocketClient muss wissen, wohin er Tool-Calls schickt
+    websocket_client.set_tool_call_handler(hardware_manager.handle_tool_call)
 
-    def on_ai_reply(self, record):
-        """Callback when AI replies"""
-        if record.audio:
-            logging.info("main      | 📨 Received AI Voice!")
-            url = self.pb.download_file(record, record.audio)
-            self.audio.play_audio(url)
-        else:
-            logging.info(f"main      | 📨 Received Text: {record.content}")
+    # Verbinde zum Backend
+    await websocket_client.connect()
 
-    def run(self):
-        print("-------------------------------------")
-        print("🤖 SQUISHY HARDWARE CLIENT (SIMULATION)")
-        print("-------------------------------------")
+    # Starte Audio-Aufnahme
+    await audio_handler.start_audio_input()
+    
+    # Starte Sensor-Überwachung
+    hardware_manager.start_monitoring()
 
-        # Start Services
-        self.sensors.start_simulation()
-        # self.pb.connect()
-        self.pb.listen_for_reply(self.on_ai_reply)
-
-        print("\n--> Press [ENTER] to simulate 'Picking Up / Wake Word'")
-        print("--> Press [CTRL+C] to stop\n")
-
-        try:
-            while True:
-                # This input() blocks the loop, simulating "Waiting for Wake Word"
-                input() 
-                
-                print("\n--- Interaction Started ---")
-                
-                # 1. Capture State
-                current_meta = self.sensors.get_metadata()
-                logging.info(f"main      | 📸 Sensor Snapshot: {current_meta}")
-
-                # 2. Record Audio
-                # (In simulation, this just grabs the test file)
-                audio_file = self.audio.record_audio()
-
-                # 3. Send
-                if audio_file:
-                    self.pb.upload_message(audio_file, current_meta)
-                
-                print("--- Waiting for Reply ---\n")
-
-        except KeyboardInterrupt:
-            print("\n👋 Shutting down...")
+    # Bleibe am Laufen, bis manuell beendet (z.B. Strg+C)
+    while True:
+        await asyncio.sleep(1) # Halte den Event-Loop am Leben
 
 if __name__ == "__main__":
-    SquishyHardware().run()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Client stopped by user.")
+    finally:
+        # Hier cleanup-Routinen aufrufen
+        pass
