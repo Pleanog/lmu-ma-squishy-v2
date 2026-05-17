@@ -6,6 +6,7 @@ import traceback
 logger = logging.getLogger(__name__)
 from google import genai
 from google.genai import types
+from system_promt import system_promt;
 
 class GeminiLive:
     """
@@ -39,7 +40,7 @@ class GeminiLive:
                     )
                 )
             ),
-            system_instruction=types.Content(parts=[types.Part(text="You are a helpful AI assistant. Keep your responses concise. Speak in a friendly Irish accent. You can see the user's camera or screen which is shared as realtime input images with you.")]),
+            system_instruction=types.Content(parts=[types.Part(text=system_promt)]),
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             realtime_input_config=types.RealtimeInputConfig(

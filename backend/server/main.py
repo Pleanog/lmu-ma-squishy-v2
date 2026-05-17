@@ -1,65 +1,45 @@
-import asyncio
-import base64
-import datetime
-import json
-import logging
-import os
-import httpx # For PocketBase API interactions
+# FILE: app/main.py
 
-from dotenv import load_dotenv
+import asyncio
+import logging
+import httpx # For PocketBase API interactions
+import json
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from gemini_live import GeminiLive
-from tools.squishy_tools import squishy_tools
-from google.genai import types
+from contextlib import asynccontextmanager
 
-# --- PocketBase integration ---
-# TODO: a more robust PocketBase client wrapper later
-PB_URL = os.getenv("PB_URL")
-PB_ADMIN_EMAIL = os.getenv("PB_ADMIN_EMAIL")
-PB_ADMIN_PASS = os.getenv("PB_ADMIN_PASS")
+from config import settings
+from websocket.manager import WebSocketManager
+from websocket.router import MessageRouter
+from gemini.session import GeminiSessionManager
+from tools.dispatcher import ToolDispatcher
+from tools.squishy_tools import squishy_tools # The actual tool definitions
+from models.events import ErrorEvent, SystemMessageEvent
 
-# Load environment variables
-load_dotenv()
-
+# --- Logging Setup ---
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("gemini_live").setLevel(logging.DEBUG) # Detailed Gemini Live logs
-logging.getLogger(__name__).setLevel(logging.DEBUG) # FrontEnd App logs
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING) # Reduce noise from httpx
 logger = logging.getLogger(__name__)
 
-# Configuration
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL = os.getenv("MODEL", "gemini-3.1-flash-live-preview")
-# Initialize FastAPI
-app = FastAPI(
-    title="Squishy 2.0 Backend",
-    description="FastAPI server for managing Gemini Live API, Squishy 2.0 hardware, and PocketBase logging.",
-    version="0.1.0",
-)
+# --- Global State / Dependency Injection Containers ---
+ws_manager: WebSocketManager
+tool_dispatcher: ToolDispatcher
+gemini_session_manager: GeminiSessionManager
+message_router: MessageRouter
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-frontend_update_queue = asyncio.Queue()
-
-# --- Global state or dependency injection for PocketBase client ---
-# TODO: we want to initialize PocketBase once and reuse the client.
-# For simplicity, we'll make a helper function here.
 async def get_pb_admin_token():
     """Authenticates with PocketBase as admin and returns the token."""
-    if not all([PB_URL, PB_ADMIN_EMAIL, PB_ADMIN_PASS]):
+    if not all([settings.PB_URL, settings.PB_ADMIN_EMAIL, settings.PB_ADMIN_PASS]):
         logger.error("PocketBase credentials not fully set in .env")
         return None
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{PB_URL}/api/admins/auth-with-password",
-                json={"identity": PB_ADMIN_EMAIL, "password": PB_ADMIN_PASS}
+                f"{settings.PB_URL}/api/admins/auth-with-password",
+                json={"identity": settings.PB_ADMIN_EMAIL, "password": settings.PB_ADMIN_PASS}
             )
             response.raise_for_status()
             token = response.json()["token"]
@@ -72,330 +52,93 @@ async def get_pb_admin_token():
         logger.error(f"Error connecting to PocketBase: {e}")
         return None
 
-# --- Hardware WebSocket Endpoint for Squishy 2.0 ---
-@app.websocket("/ws/hardware")
-async def websocket_hardware_endpoint(websocket: WebSocket):
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    WebSocket endpoint for the Raspberry Pi (Squishy 2.0 hardware).
-    Handles streaming audio from the ReSpeaker and sensor data from Squishy.
-    Also sends actuator commands to Squishy.
+    FastAPI lifespan context manager for startup and shutdown events.
+    Initializes global services.
     """
-    await websocket.accept()
-    logger.info("🟢 Hardware WebSocket connection accepted from Raspberry Pi")
+    global ws_manager, tool_dispatcher, gemini_session_manager, message_router
 
-    # Queues for data going to Gemini (from RPi)
-    rpi_audio_input_queue = asyncio.Queue()
-    rpi_sensor_input_queue = asyncio.Queue()
+    logger.info("Starting up Squishy 2.0 Backend...")
 
-    # Queue for commands going to RPi (from Gemini tool calls)
-    rpi_command_output_queue = asyncio.Queue()
+    # 1. Initialize WebSocket Manager
+    ws_manager = WebSocketManager()
 
-    # --- Hardware-specific output callback for Gemini ---
-    # This is where Gemini's tool calls will be processed and sent to the RPi
-    async def squishy_actuator_callback(tool_name: str, args: dict):
-        """
-        Callback to send actuator commands to the Raspberry Pi.
-        This function will be called by GeminiLive when a tool call occurs.
-        """
-        command = {"type": "tool_command", "tool_name": tool_name, "args": args}
-        logger.debug(f"Putting command for RPi on queue: {command}")
-        await rpi_command_output_queue.put(command)
+    # 2. Initialize Tool Dispatcher and register tools
+    tool_dispatcher = ToolDispatcher(ws_manager)
+    tool_dispatcher.register_tool_schemas(squishy_tools)
 
-        frontend_message = {
-            "type": "tool_call_initiated",
-            "tool_name": tool_name,
-            "args": args,
-            "timestamp": datetime.now().isoformat()
-        }
-        logger.debug(f"Putting frontend notification on queue: {frontend_message}")
-        await frontend_update_queue.put(frontend_message)
-    
-    # --- Tool mapping to Python functions ---
-    # These functions will be called when Gemini generates a tool call
-    tool_mapping = {
-        "set_led_color": lambda color: squishy_actuator_callback("set_led_color", {"color": color}),
-        "play_squishy_sound": lambda sound_type: squishy_actuator_callback("play_squishy_sound", {"sound_type": sound_type}),
-        "vibrate_squishy": lambda pattern: squishy_actuator_callback("vibrate_squishy", {"pattern": pattern}),
-    }
+    # 3. Initialize Gemini Session Manager
+    gemini_session_manager = GeminiSessionManager(ws_manager, tool_dispatcher)
+    await gemini_session_manager.initialize_gemini_client() # Pre-initialize GeminiLive
 
-    gemini_client_hardware = GeminiLive(
-        api_key=GEMINI_API_KEY,
-        model=MODEL,
-        input_sample_rate=16000, # Assuming ReSpeaker provides 16kHz audio
-        tools=squishy_tools,
-        tool_mapping=tool_mapping
-    )
+    # 4. Initialize Message Router (connects all services)
+    message_router = MessageRouter(ws_manager, gemini_session_manager, tool_dispatcher)
+    # The ws_manager.message_router is set within the MessageRouter's __init__
 
-    async def receive_from_rpi():
-        """Handles incoming messages from the Raspberry Pi."""
-        try:
-            while True:
-                message = await websocket.receive()
-                if message.get("bytes"):
-                    # Raw audio from ReSpeaker
-                    await rpi_audio_input_queue.put(message["bytes"])
-                elif message.get("text"):
-                    # Structured sensor data or other RPi messages (JSON)
-                    text_data = message["text"]
-                    try:
-                        payload = json.loads(text_data)
-                        if isinstance(payload, dict) and payload.get("type") == "sensor_event":
-                            logger.info(f"Received sensor event from RPi: {payload}")
-                            # Convert sensor event to text for Gemini, e.g., "System: User is petting Squishy."
-                            # You can refine this translation based on your needs.
-                            await rpi_sensor_input_queue.put(
-                                f"System: User {payload['event']} Squishy with {payload.get('intensity', 'unknown')} intensity."
-                            )
-                        else:
-                            # Handle other text messages from RPi if any
-                            logger.info(f"Received unexpected text from RPi: {text_data}")
-                            await rpi_sensor_input_queue.put(text_data) # Or put to another queue
-                    except json.JSONDecodeError:
-                        logger.warning(f"RPi sent non-JSON text: {text_data}")
-                        await rpi_sensor_input_queue.put(text_data)
-        except WebSocketDisconnect:
-            logger.info("Hardware WebSocket disconnected from Raspberry Pi")
-        except Exception as e:
-            logger.error(f"Error receiving from RPi: {e}", exc_info=True)
+    # Start background tasks
+    asyncio.create_task(ws_manager.start_event_processing())
+    asyncio.create_task(gemini_session_manager.start_session()) # Start Gemini session loop
 
-    async def send_to_rpi():
-        """Sends commands from FastAPI (via Gemini tool calls) to the Raspberry Pi."""
-        try:
-            while True:
-                command = await rpi_command_output_queue.get()
-                logger.debug(f"Sending command to RPi: {command}")
-                await websocket.send_json(command)
-        except asyncio.CancelledError:
-            logger.debug("send_to_rpi task cancelled")
-        except Exception as e:
-            logger.error(f"Error sending to RPi: {e}", exc_info=True)
+    # Authenticate with PocketBase on startup
+    pb_token = await get_pb_admin_token()
+    if pb_token:
+        logger.info("PocketBase admin token acquired.")
+        # Store token globally if needed, or pass to a PocketBase client instance
+    else:
+        logger.warning("Could not acquire PocketBase admin token on startup.")
 
-    receive_from_rpi_task = asyncio.create_task(receive_from_rpi())
-    send_to_rpi_task = asyncio.create_task(send_to_rpi())
-
-    async def run_hardware_session():
-        async for response in gemini_client_hardware.start_session(
-            audio_input_queue=rpi_audio_input_queue,
-            video_input_queue=asyncio.Queue(),
-            text_input_queue=rpi_sensor_input_queue,
-            audio_output_callback=lambda data: None,
-        ):
-            if response: # Renamed 'event' to 'response' for clarity based on Python example
-                logger.debug(f"Gemini response from RPi session: {response}")
-
-                if response.tool_call: # If Gemini wants to call a tool
-                    logger.info(f"Received tool_call: {response.tool_call}")
-                    function_responses = []
-                    for fc in response.tool_call.function_calls:
-                        logger.info(f"Executing tool: {fc.name} with args: {fc.args}")
-                        # Execute the tool function
-                        if fc.name in tool_mapping:
-                            # This will put the command on rpi_command_output_queue
-                            await tool_mapping[fc.name](**fc.args)
-
-                            # Determine scheduling behavior
-                            scheduling_behavior = "WHEN_IDLE" # Default for blocking tools
-                            if fc.name == "set_led_color": # For non-blocking tools
-                                scheduling_behavior = "INTERRUPT" # Or "SILENT" if you don't want interruption
-
-                            function_response = types.FunctionResponse(
-                                id=fc.id,
-                                name=fc.name,
-                                response={ "result": "ok", "scheduling": scheduling_behavior }
-                            )
-                        else:
-                            function_response = types.FunctionResponse(
-                                id=fc.id,
-                                name=fc.name,
-                                response={ "result": "error", "message": f"Tool {fc.name} not found." }
-                            )
-                        function_responses.append(function_response)
-
-                    # Send the responses back to Gemini
-                    await gemini_client_hardware.send_tool_response(function_responses=function_responses)
-
-                # Also forward all responses/events to the frontend, so it can display tool_calls
-                try:
-                    # Convert response object to dict for JSON serialization
-                    await websocket.send_json(response.to_dict()) # Assumes websocket is accessible here
-                                                                # Or better: send to frontend websocket queue
-                except Exception as e:
-                    logger.error(f"Failed to send RPi session event to frontend: {e}")
+    logger.info("Squishy 2.0 Backend startup complete.")
+    yield
+    logger.info("Shutting down Squishy 2.0 Backend...")
+    await gemini_session_manager.stop_session()
+    logger.info("Squishy 2.0 Backend shutdown complete.")
 
 
-    try:
-        await run_hardware_session()
-    except Exception as e:
-        logger.error(f"Error in Gemini session for RPi: {type(e).__name__}: {e}", exc_info=True)
-    finally:
-        receive_from_rpi_task.cancel()
-        send_to_rpi_task.cancel()
-        try:
-            await websocket.close()
-        except:
-            pass
+app = FastAPI(
+    title="Squishy 2.0 Backend",
+    description="FastAPI server for managing Gemini Live API, Squishy 2.0 hardware, and PocketBase logging.",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    WebSocket endpoint for the Vue.js Frontend (Companion App).
-    Handles user's browser microphone audio and displays AI responses.
-    This will also receive updates about Squishy's actions.
+    Unified WebSocket endpoint for all clients (frontend, hardware, monitor).
+    Clients must register themselves upon connection.
     """
-    await websocket.accept()
-
-    logger.info("🟢 Frontend WebSocket connection accepted")
-
-    audio_input_queue = asyncio.Queue()  # For browser mic audio
-    video_input_queue = asyncio.Queue()  # For browser camera video (if you add it)
-    text_input_queue = asyncio.Queue()   # For browser text input (if you add it)
-
-    # Use an Event to signal tasks to stop if disconnect occurs
-    disconnect_event = asyncio.Event()
-
-    # --- Frontend-specific output callback for Gemini ---
-    async def audio_output_callback(data):
-        if not disconnect_event.is_set(): # Only try to send if not disconnected
-            try:
-                await websocket.send_bytes(data)
-            except RuntimeError as e:
-                logger.warning(f"Failed to send audio bytes to frontend (likely disconnected): {e}")
-                disconnect_event.set() # Set event if send fails
-
-    async def audio_interrupt_callback():
-        if not disconnect_event.is_set(): # Only try to send if not disconnected
-            try:
-                await websocket.send_json({"type": "interrupted"})
-            except RuntimeError as e:
-                logger.warning(f"Failed to send audio interrupt to frontend (likely disconnected): {e}")
-                disconnect_event.set() # Set event if send fails
-
-    gemini_client_frontend = GeminiLive(
-        api_key=GEMINI_API_KEY,
-        model=MODEL,
-        input_sample_rate=16000, # Assuming browser mic provides 16kHz audio
-        # tools=... # Frontend's Gemini session typically doesn't need to define tools
-        # audio_output_callback=audio_output_callback,
-        # audio_interrupt_callback=audio_interrupt_callback,
-    )
-
-    async def send_updates_to_frontend():
-        try:
-            while not disconnect_event.is_set():
-                update_msg = await frontend_update_queue.get()
-                if update_msg:
-                    try:
-                        await websocket.send_json(update_msg)
-                    except RuntimeError as e:
-                        logger.warning(f"Failed to send update to frontend (likely disconnected): {e}")
-                        disconnect_event.set()
-                        break
-        except asyncio.CancelledError:
-            logger.debug("send_updates_to_frontend task cancelled")
-        except Exception as e:
-            logger.error(f"Error in send_updates_to_frontend: {e}", exc_info=True)
-
-    async def receive_from_client():
-        """Handles incoming messages (audio, text, video) from the frontend."""
-        try:
-            while not disconnect_event.is_set(): # Loop while not disconnected
-                message = await websocket.receive()
-                if message["type"] == "websocket.disconnect":
-                    logger.info("Frontend WebSocket detected disconnect.")
-                    disconnect_event.set() # Signal disconnect
-                    break # Exit loop
-                # Process other message types
-                if message.get("bytes"):
-                    await audio_input_queue.put(message["bytes"])
-                elif message.get("text"):
-                    text = message["text"]
-                    try:
-                        payload = json.loads(text)
-                        if isinstance(payload, dict) and payload.get("type") == "image":
-                            logger.info(f"Received image chunk from client: {len(payload['data'])} base64 chars")
-                            image_data = base64.b64decode(payload["data"])
-                            await video_input_queue.put(image_data)
-                            continue
-                    except json.JSONDecodeError:
-                        pass
-
-                    await text_input_queue.put(text)
-        except WebSocketDisconnect:
-            logger.info("Frontend WebSocket disconnected gracefully (from exception).")
-            disconnect_event.set() # Signal disconnect
-        except Exception as e:
-            logger.error(f"Error receiving from frontend client: {e}", exc_info=True)
-            disconnect_event.set() # Signal disconnect on any error
-
-    async def run_frontend_session():
-        """Main loop for the frontend's Gemini session."""
-        try:
-            async for event in gemini_client_frontend.start_session(
-                audio_input_queue=audio_input_queue,
-                video_input_queue=video_input_queue,
-                text_input_queue=text_input_queue,
-                audio_output_callback=audio_output_callback,
-                audio_interrupt_callback=audio_interrupt_callback, 
-                # audio_output_callback and audio_interrupt_callback are set during GeminiLive init
-            ):
-                if disconnect_event.is_set(): # If client disconnected, stop processing Gemini events
-                    logger.debug("Client disconnected, stopping Gemini event processing.")
-                    break
-                if event:
-                    # Forward events (transcriptions, etc.) to the frontend
-                    try:
-                        await websocket.send_json(event)
-                    except RuntimeError as e:
-                        logger.warning(f"Failed to send Gemini event to frontend (likely disconnected): {e}")
-                        disconnect_event.set() # Set event if send fails
-                        break # Exit loop as client is gone
-        except asyncio.CancelledError:
-            logger.info("Gemini frontend session task cancelled.")
-        except Exception as e:
-            logger.error(f"Error in Gemini session for frontend: {type(e).__name__}: {e}", exc_info=True)
-        finally:
-            logger.debug("run_frontend_session finished or interrupted.")
-            disconnect_event.set() # Ensure event is set if this task finishes first
-
-    # Create tasks
-    receive_from_frontend_task = asyncio.create_task(receive_from_client())
-    run_frontend_session_task = asyncio.create_task(run_frontend_session())
-    send_updates_to_frontend_task = asyncio.create_task(send_updates_to_frontend())
-    # Create a task for the event.wait() coroutine
-    disconnect_wait_task = asyncio.create_task(disconnect_event.wait())
-
-    # Wait for either task to signal disconnect or complete
-    done, pending = await asyncio.wait(
-        [receive_from_frontend_task, run_frontend_session_task, disconnect_wait_task, send_updates_to_frontend_task],
-        return_when=asyncio.FIRST_COMPLETED
-    )
-
-    # If disconnect_event.wait() completed, ensure other tasks are cancelled
-    if disconnect_event.is_set():
-        for task in pending:
-            task.cancel()
-            try:
-                await task # Await cancellation to avoid Task exception was never retrieved warnings
-            except asyncio.CancelledError:
-                pass
-
-    logger.info("Frontend WebSocket endpoint shutting down.")
-
-    # Final websocket close (redundant if already closed by Starlette, but safe)
+    client = await ws_manager.connect(websocket)
     try:
-        if not websocket.client_state == 3: # WebSocketState.DISCONNECTED
-             await websocket.close()
+        async for event in client.receive_events():
+            # All incoming events go through the WebSocketManager's router_wrapper first
+            # which handles registration and active controller requests, then puts
+            # other events into the main event_queue for the MessageRouter.
+            await ws_manager.router_wrapper(event, client.client_id)
+    except WebSocketDisconnect:
+        logger.info(f"Client {client.client_id} disconnected from /ws.")
     except Exception as e:
-        logger.debug(f"Error during final websocket close (may already be closed): {e}")
+        logger.error(f"Error in WebSocket communication for client {client.client_id}: {e}", exc_info=True)
+        # Send an error event to the client before disconnecting, if possible
+        try:
+            await client.send_event(ErrorEvent(message=f"Server error: {e.__class__.__name__}"))
+        except Exception:
+            pass # Ignore if client already unreachable
+    finally:
+        await ws_manager.disconnect(client.client_id)
+        logger.info(f"Client {client.client_id} fully cleaned up.")
 
 
-# --- Main execution block ---
 if __name__ == "__main__":
     import uvicorn
-
-    port = int(os.getenv("PORT", 8000))
-    # It's good practice to run Uvicorn with a server factory or programmatically
-    # to better manage application state if you had more complex setups.
-    # For now, this is fine.
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    port = int(settings.PORT if hasattr(settings, 'PORT') else 8000)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True) # reload=True for development
