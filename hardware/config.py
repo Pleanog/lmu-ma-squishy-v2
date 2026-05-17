@@ -1,7 +1,9 @@
 # config.py
 
-BACKEND_WS_URL = "ws://127.0.0.1:8000/ws" # IP deines Backend-Servers anpassen!
-BACKEND_WS_URL = "ws://192.168.1.xxx:8000/ws" # TODO: IP des Backend-Servers anpassen!
+# BACKEND_WS_URL = "ws://127.0.0.1:8000/ws" # IP deines Backend-Servers anpassen!
+# BACKEND_WS_URL = "ws://100.68.58.11:8000/ws" # Tailscale
+BACKEND_WS_URL = "ws://192.168.1.103:8000/ws" # Local Laptop
+# BACKEND_WS_URL = "ws://192.168.1.xxx:8000/ws" # TODO: IP des Backend-Servers anpassen!
 
 AUDIO_SAMPLE_RATE_INPUT = 16000 # für Mikrofon-Input zu Gemini
 AUDIO_SAMPLE_RATE_OUTPUT = 24000 # von Gemini erhalten
