@@ -1,4 +1,7 @@
+on windows:
+.\.venv\Scripts\Activate.ps1
 
+on pie:
 source venv/bin/activate
 
 

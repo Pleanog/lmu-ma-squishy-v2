@@ -11,6 +11,7 @@ class Settings:
     PB_URL: str = os.getenv("PB_URL", "")
     PB_ADMIN_EMAIL: str = os.getenv("PB_ADMIN_EMAIL", "")
     PB_ADMIN_PASS: str = os.getenv("PB_ADMIN_PASS", "")
+    PORT: 8000
 
     AUDIO_SAMPLE_RATE: int = 16000 # Assuming clients provide 16kHz audio
 
