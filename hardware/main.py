@@ -1,43 +1,46 @@
-# squishy_pi_client/main.py
-
 import asyncio
 import logging
 import sys
-from typing import Union
-from client.websocket_client import WebSocketClient, IncomingBackendJsonEvent, RegistrationAckEvent, AIResponseEvent
+from typing import Union, Dict, Any
+from client.websocket_client import WebSocketClient, IncomingBackendJsonEvent, RegistrationAckEvent, AIResponseEvent, ToolCallEvent, TranscriptEvent
+from client.audio_handler import AudioHandler
 from config import BACKEND_WS_URL, CLIENT_CAPABILITIES
 
-# Konfiguriere Logging für eine bessere Ausgabe
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Callbacks für den WebSocketClient ---
+audio_handler = AudioHandler(samplerate=24000, channels=1, dtype='int16')
 
 def on_connect():
-    """Wird aufgerufen, wenn die WebSocket-Verbindung erfolgreich ist."""
     logger.info("Successfully connected to the backend!")
 
 def on_error(e: Exception):
-    """Wird bei einem Fehler in der WebSocket-Verbindung aufgerufen."""
     logger.error(f"WebSocket error occurred: {e}")
 
 async def handle_backend_message(data: Union[IncomingBackendJsonEvent, bytes]):
-    """
-    Verarbeitet Nachrichten, die vom Backend empfangen werden.
-    Für den initialen Text-Chat konzentrieren wir uns auf Textausgaben.
-    """
+    # ... (deine bestehende Implementierung) ...
     if isinstance(data, bytes):
-        logger.debug(f"Received {len(data)} bytes of audio data. (Ignoring for text-only mode)")
-        # Hier würde später audio_handler.play_audio(data) aufgerufen
-    elif isinstance(data, dict): # Geparsstes JSON-Objekt
+        logger.debug(f"Received {len(data)} bytes of audio data. Playing...")
+        audio_handler.play_audio(data)
+    elif isinstance(data, dict):
         message_type = data.get("type")
         if message_type == "registration_ack":
             ack_data: RegistrationAckEvent = data
             logger.info(f"Registration acknowledged: {ack_data.get('message')}")
         elif message_type == "ai_response":
             ai_response: AIResponseEvent = data
-            logger.info(f"AI Response: {ai_response.get('text')}")
+            logger.info(f"AI Response (Text): {ai_response.get('text')}")
+        elif message_type == "transcript":
+            transcript_data: TranscriptEvent = data
+            logger.info(f"Transcript ({'Final' if transcript_data.get('is_final') else 'Interim'}): {transcript_data.get('text')}")
+        elif message_type == "tool_code":
+            tool_call_data: ToolCallEvent = data
+            tool_name = tool_call_data.get('tool_name')
+            tool_args = tool_call_data.get('args')
+            suggested_action = tool_call_data.get('suggested_action')
+            logger.info(f"TOOL CALL: {tool_name}({tool_args}) - Suggested Action: {suggested_action}")
+            await simulate_tool_call(tool_name, tool_args, suggested_action)
         elif message_type == "system_message":
             logger.info(f"System Message: {data.get('message')}")
         elif message_type == "error":
@@ -47,9 +50,30 @@ async def handle_backend_message(data: Union[IncomingBackendJsonEvent, bytes]):
     else:
         logger.warning(f"Received unexpected message format: {type(data)} - {data}")
 
+async def simulate_tool_call(tool_name: str, args: Dict[str, Any], suggested_action: str):
+    logger.info(f"Simulating Tool Call: {tool_name} with args {args} and action '{suggested_action}'")
+    
+    if tool_name == "set_led_color":
+        color = args.get("color", "unknown")
+        duration = args.get("duration_seconds", 1)
+        logger.info(f"  -> Simulating: Set LED color to {color} for {duration} seconds.")
+    elif tool_name == "play_sound_effect":
+        effect_name = args.get("effect_name", "beep")
+        logger.info(f"  -> Simulating: Play sound effect '{effect_name}'.")
+        print(f"  [Sound Effect: {effect_name}]")
+    elif tool_name == "get_sensor_data":
+        sensor_type = args.get("sensor_type", "temperature")
+        logger.info(f"  -> Simulating: Get data from {sensor_type} sensor.")
+        print(f"  [Sensor Reading: {sensor_type} = 25.0 C (simulated)]")
+    else:
+        logger.warning(f"  -> Unknown tool call simulation for '{tool_name}'.")
+
+# Diese Funktion kapselt den blockierenden input()-Aufruf
+def get_user_input_blocking():
+    return input("Enter message (or 'exit' to quit): ")
 
 async def main():
-    logger.info("Starting Squishy Pi Client - Text-only mode.")
+    logger.info("Starting Squishy Pi Client.")
 
     websocket_client = WebSocketClient(
         ws_url=BACKEND_WS_URL,
@@ -60,37 +84,32 @@ async def main():
         on_error_callback=on_error
     )
 
-    # Starte die WebSocket-Verbindung
     await websocket_client.connect()
-
-    # Gib dem Client etwas Zeit für die Registrierung und den ersten Kontakt
     await asyncio.sleep(2) 
 
     if websocket_client.is_connected:
-        # Frage, ob der Pi den aktiven Controller übernehmen soll
-        # Dies ist wichtig, da nur der aktive Controller den initialen Persona-Prompt senden kann
-        # und dann Text/Audio-Input senden darf.
         logger.info(f"Current active controller ID: {websocket_client.active_controller_id}")
         logger.info(f"My client ID: {websocket_client.client_id}")
 
         if websocket_client.client_id and websocket_client.client_id == websocket_client.active_controller_id:
-            logger.info("I am the active controller.")
-            # Hier kann der Pi den initialen Persona-Gruß triggern
-            await websocket_client.send_initiate_persona_greeting()
+            logger.info("I am the active controller. Initiating persona greeting.")
+            await websocket_client.send_text_message("Sag einmal nur das Wort Apfelbaum")
         else:
             logger.warning("I am not the active controller. Requesting control...")
             await websocket_client.request_set_active_controller()
-            await asyncio.sleep(1) # Kurze Pause, um auf die Bestätigung zu warten
+            await asyncio.sleep(1)
             if websocket_client.client_id == websocket_client.active_controller_id:
-                logger.info("Successfully became the active controller!")
-                await websocket_client.send_initiate_persona_greeting()
+                logger.info("Successfully became the active controller! Initiating persona greeting.")
+                await websocket_client.send_text_message("Sag einmal nur das Wort Pferdestall")
             else:
                 logger.warning("Failed to become active controller. I can only listen.")
 
 
-        # Einfache Schleife zum Senden von Text vom Pi an Gemini
+        # Schleife zum Senden von Text vom Pi an Gemini, jetzt nicht-blockierend
         while websocket_client.is_connected:
-            user_input = input("Enter message (or 'exit' to quit): ")
+            # Führe den blockierenden input-Aufruf in einem separaten Thread aus
+            user_input = await asyncio.to_thread(get_user_input_blocking)
+            
             if user_input.lower() == 'exit':
                 break
             if websocket_client.client_id == websocket_client.active_controller_id:
@@ -101,6 +120,7 @@ async def main():
         logger.error("Failed to connect to WebSocket, exiting.")
 
     await websocket_client.disconnect()
+    audio_handler.stop_playback()
     logger.info("Squishy Pi Client stopped.")
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 import asyncio
 import websockets
+from typing import TypedDict
+from typing_extensions import Literal
 import json
 import logging
 from datetime import datetime
@@ -15,6 +17,17 @@ logger = logging.getLogger(__name__)
 class IncomingBackendJsonEvent:
     type: str
 
+class TranscriptEvent(TypedDict):
+    type: Literal["transcript"]
+    text: str
+    is_final: bool
+
+class ToolCallEvent(TypedDict):
+    type: Literal["tool_code"]
+    tool_name: str
+    args: Dict[str, Any]
+    suggested_action: str
+
 class RegistrationAckEvent(IncomingBackendJsonEvent):
     client_id: str
     message: str
@@ -23,6 +36,16 @@ class RegistrationAckEvent(IncomingBackendJsonEvent):
 
 class AIResponseEvent(IncomingBackendJsonEvent):
     text: str
+
+IncomingBackendJsonEvent = Union[
+    type: str,
+    RegistrationAckEvent,
+    AIResponseEvent,
+    # SystemMessageEvent,
+    # ErrorEvent,
+    TranscriptEvent,
+    ToolCallEvent,
+]
 
 # Wir geben entweder geparste JSON-Objekte oder rohe Audio-Bytes weiter
 MessageCallback = Callable[[Union[IncomingBackendJsonEvent, bytes]], Any]
@@ -138,7 +161,9 @@ class WebSocketClient:
                 
                 # Check for binary data (audio)
                 if isinstance(message, bytes):
-                    self._on_message_callback(message)
+                    # Da handle_backend_message auch ein Coroutine ist, müssen wir es awaiten
+                    # oder als Task ausführen. Für Audio ist direkter await OK, da es schnell sein sollte.
+                    await self._on_message_callback(message) # <<< Hinzugefügt: await
                 elif isinstance(message, str):
                     try:
                         parsed_data = json.loads(message)
@@ -152,38 +177,29 @@ class WebSocketClient:
                             self._active_controller_type = ack.get("current_active_controller_type")
                             logger.info(f"Registered as {self.client_type} with ID {self.client_id}. "
                                         f"Active Controller: {self._active_controller_type} ({self._active_controller_id})")
-                            self._on_message_callback(parsed_data) # Also pass ack to main app
+                            asyncio.create_task(self._on_message_callback(parsed_data)) # <<< Hinzugefügt: asyncio.create_task
                         # Handle active_controller_change internally
                         elif parsed_data.get("type") == "active_controller_change":
                             change = parsed_data
                             self._active_controller_id = change.get("new_active_controller_id")
                             self._active_controller_type = change.get("new_active_controller_type")
                             logger.info(f"Active controller changed to: {self._active_controller_type} ({self._active_controller_id})")
-                            self._on_message_callback(parsed_data) # Also pass to main app
+                            asyncio.create_task(self._on_message_callback(parsed_data)) # <<< Hinzugefügt: asyncio.create_task
                         # Handle tool_call (for later)
                         elif parsed_data.get("type") == "tool_call":
                             if self._tool_call_handler:
                                 tool_name = parsed_data.get("tool_name")
                                 args = parsed_data.get("args", {})
-                                await self._tool_call_handler(tool_name, args)
-                            self._on_message_callback(parsed_data) # Also pass to main app
+                                await self._tool_call_handler(tool_name, args) # Tool handler kann await sein
+                            asyncio.create_task(self._on_message_callback(parsed_data)) # <<< Hinzugefügt: asyncio.create_task
                         else:
                             # For all other JSON messages (e.g., ai_response, transcript, system_message)
-                            self._on_message_callback(parsed_data)
+                            asyncio.create_task(self._on_message_callback(parsed_data)) # <<< Hinzugefügt: asyncio.create_task
 
                     except json.JSONDecodeError:
                         logger.warning(f"Received non-JSON string message: {message}")
-                        # You could pass this raw string to the callback if needed
-                        # self._on_message_callback(message)
                 else:
                     logger.warning(f"Received unexpected message type: {type(message)} - {message}")
-                    # Hier könnte auch ein Blob ankommen, wenn die WebSocket-Library es so sendet.
-                    # websockets sendet normalerweise str für Text und bytes für Binär.
-                    # Wenn es ein Blob ist, müsste es hier ähnlich wie im TS-Frontend behandelt werden:
-                    # if isinstance(message, Blob):
-                    #    array_buffer = await message.arrayBuffer()
-                    #    self._on_message_callback(array_buffer)
-                    # For Python, websockets typically gives bytes for binary data.
 
             except websockets.exceptions.ConnectionClosed:
                 logger.info("WebSocket connection closed gracefully.")
@@ -242,15 +258,3 @@ class WebSocketClient:
             await self._send_json(message)
         else:
             logger.warning("Client ID not set, cannot request active controller.")
-
-    async def send_initiate_persona_greeting(self):
-        """Sends a request to the backend to initiate the AI's persona greeting."""
-        if self._client_id:
-            message = {
-                "type": "initiate_persona_greeting",
-                "timestamp": datetime.now().isoformat(),
-                "client_id": self._client_id
-            }
-            await self._send_json(message)
-        else:
-            logger.warning("Client ID not set, cannot send persona greeting initiation.")

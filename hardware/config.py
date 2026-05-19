@@ -17,6 +17,7 @@ CLIENT_CAPABILITIES = [
     "audio_output",
     "sensor_input",
     "tool_execution",
+    "text_input",
     "text_output"
 ]
 
