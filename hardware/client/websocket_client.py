@@ -88,18 +88,27 @@ class WebSocketClient:
     async def connect(self):
         logger.info(f"Attempting to connect to WebSocket at {self.ws_url}")
         try:
-            self._websocket = await websockets.connect(self.ws_url)
+            self._websocket = await asyncio.wait_for(websockets.connect(self.ws_url), timeout=5)
             self._is_connected = True
             logger.info("WebSocket connected. Sending registration...")
             await self._register_client()
             if self._on_connect_callback:
                 self._on_connect_callback()
             
-            # Start listening for messages in a separate task
             asyncio.create_task(self._listen_for_messages())
 
+        except asyncio.TimeoutError:
+            logger.error(f"WebSocket connection timed out after 5 seconds: No response from {self.ws_url}")
+            self._is_connected = False
+            if self._on_error_callback:
+                self._on_error_callback(asyncio.TimeoutError("timed out during opening handshake"))
+        except websockets.exceptions.WebSocketException as e:
+            logger.error(f"WebSocket specific connection failed: {e}")
+            self._is_connected = False
+            if self._on_error_callback:
+                self._on_error_callback(e)
         except Exception as e:
-            logger.error(f"WebSocket connection failed: {e}")
+            logger.error(f"General connection error: {e}")
             self._is_connected = False
             if self._on_error_callback:
                 self._on_error_callback(e)

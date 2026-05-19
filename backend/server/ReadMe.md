@@ -67,6 +67,7 @@ Start the FastAPI development server:
 uvicorn main:app --reload
 ```
 
+Oder mit spezifischem Port:
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
