@@ -10,7 +10,8 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-audio_handler = AudioHandler(samplerate=24000, channels=1, dtype='int16')
+# audio_handler = AudioHandler(samplerate=24000, channels=1, dtype='int16')
+audio_handler = AudioHandler(hardware_samplerate=48000, channels=2, dtype='float32', volume_factor=1.0)
 
 def on_connect():
     logger.info("Successfully connected to the backend!")
@@ -19,10 +20,9 @@ def on_error(e: Exception):
     logger.error(f"WebSocket error occurred: {e}")
 
 async def handle_backend_message(data: Union[IncomingBackendJsonEvent, bytes]):
-    # ... (deine bestehende Implementierung) ...
     if isinstance(data, bytes):
-        logger.debug(f"Received {len(data)} bytes of audio data. Playing...")
-        audio_handler.play_audio(data)
+        logger.debug(f"Received {len(data)} bytes of audio data. Playing...")      
+        audio_handler.play_audio(data, incoming_samplerate=24000)
     elif isinstance(data, dict):
         message_type = data.get("type")
         if message_type == "registration_ack":
@@ -34,7 +34,7 @@ async def handle_backend_message(data: Union[IncomingBackendJsonEvent, bytes]):
         elif message_type == "transcript":
             transcript_data: TranscriptEvent = data
             logger.info(f"Transcript ({'Final' if transcript_data.get('is_final') else 'Interim'}): {transcript_data.get('text')}")
-        elif message_type == "tool_code":
+        elif message_type == "tool_call":
             tool_call_data: ToolCallEvent = data
             tool_name = tool_call_data.get('tool_name')
             tool_args = tool_call_data.get('args')

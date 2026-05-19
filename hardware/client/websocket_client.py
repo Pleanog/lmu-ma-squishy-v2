@@ -23,7 +23,7 @@ class TranscriptEvent(TypedDict):
     is_final: bool
 
 class ToolCallEvent(TypedDict):
-    type: Literal["tool_code"]
+    type: Literal["tool_call"]
     tool_name: str
     args: Dict[str, Any]
     suggested_action: str
