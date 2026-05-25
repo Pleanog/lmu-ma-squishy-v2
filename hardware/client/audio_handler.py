@@ -20,7 +20,6 @@ class AudioHandler:
         self.volume_factor = volume_factor
         self.output_stream: Optional[sd.OutputStream] = None
         self._initialize_output_stream()
-
     def _get_hifiberry_device_index(self) -> Optional[int]:
         if sd is None:
             return None
