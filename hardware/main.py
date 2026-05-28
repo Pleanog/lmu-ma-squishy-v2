@@ -16,6 +16,8 @@ from client.websocket_client import (
 )
 from client.audio_handler import AudioHandler
 from client.audio_input_handler import AudioInputHandler
+from client.hardware_handler import HardwareHandler
+
 from config import BACKEND_WS_URL, CLIENT_CAPABILITIES
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, 
@@ -39,6 +41,16 @@ async def audio_playback_worker():
         
         # Sagt der Queue, dass dieser Chunk fertig ist
         audio_playback_queue.task_done()
+
+async def send_sensor_data_to_gemini(text_message: str):
+    """Wird vom HardwareHandler gerufen, wenn ein Sensor anschlägt."""
+    if websocket_client and websocket_client.is_connected:
+        logger.info(f"Sende Sensor-Kontext an KI: {text_message}")
+        await websocket_client.send_text_message(text_message)
+
+async def handle_tool_call(tool_name: str, args: Dict[str, Any], suggested_action: str):
+    logger.info(f"⚙️ TOOL CALL vom Server empfangen: {tool_name}")
+    hardware_handler.handle_tool_call(tool_name, args)
 
 # Globale Instanzen
 websocket_client: Optional[WebSocketClient] = None
@@ -174,9 +186,12 @@ def get_user_input_blocking():
     return input("Enter message (or 'exit' to quit): ")
 
 async def main():
-    global websocket_client, audio_input_handler
+    global websocket_client, audio_input_handler, hardware_handler
 
     logger.info("Starting Squishy Pi Client.")
+
+    hardware_handler = HardwareHandler(on_sensor_update_callback=send_sensor_data_to_gemini)
+    await hardware_handler.start()
 
     websocket_client = WebSocketClient(
         ws_url=BACKEND_WS_URL,
@@ -249,6 +264,7 @@ async def main():
     if websocket_client:
         await websocket_client.disconnect()
     audio_output_handler.stop_all_streams()
+    await hardware_handler.stop()
     logger.info("Squishy Pi Client stopped.")
 
 if __name__ == "__main__":
