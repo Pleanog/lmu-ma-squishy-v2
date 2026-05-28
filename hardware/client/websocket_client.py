@@ -294,7 +294,7 @@ class WebSocketClient:
     async def send_text_message(self, text: str):
         """Sends a text message to the backend."""
         message = {
-            "type": "text_input", # Geändert von "text_message" zu "text_input" für Konsistenz
+            "type": "text_message",
             "timestamp": datetime.now().isoformat(),
             "text": text
         }
