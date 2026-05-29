@@ -175,12 +175,12 @@ class AudioInputHandler:
                 # Dennoch gut, um anderen Tasks eine Chance zu geben.
                 await asyncio.sleep(0.005) 
 
-        except pyaudio.PyAudioError as pa_e:
-            logger.error(f"PyAudio-Fehler während der Aufnahme: {pa_e}")
         except asyncio.CancelledError:
-            logger.info("Audioaufnahme-Task wurde abgebrochen.")
+            # Wird geworfen, wenn wir mit Strg+C abbrechen
+            logger.info("Audioaufnahme-Task wurde abgebrochen (CancelledError).")
         except Exception as e:
-            logger.error(f"Unerwarteter Fehler während der Audioaufnahme: {e}", exc_info=True)
+            # Fängt alle anderen Fehler (z.B. wenn das USB-Kabel gezogen wird)
+            logger.error(f"Unerwarteter Fehler während der Aufnahme: {e}", exc_info=True)
         finally:
             self._is_recording = False
             logger.info("🛑 Audioaufnahme-Loop beendet.")

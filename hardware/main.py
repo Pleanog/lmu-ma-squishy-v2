@@ -48,10 +48,6 @@ async def send_sensor_data_to_gemini(text_message: str):
         logger.info(f"Sende Sensor-Kontext an KI: {text_message}")
         await websocket_client.send_text_message(text_message)
 
-async def handle_tool_call(tool_name: str, args: Dict[str, Any], suggested_action: str):
-    logger.info(f"⚙️ TOOL CALL vom Server empfangen: {tool_name}")
-    hardware_handler.handle_tool_call(tool_name, args)
-
 # Globale Instanzen
 websocket_client: Optional[WebSocketClient] = None
 audio_input_handler: Optional[AudioInputHandler] = None
@@ -81,13 +77,6 @@ async def on_websocket_connect():
 async def on_websocket_error(e: Exception):
     """Wird aufgerufen, wenn ein WebSocket-Fehler auftritt."""
     logger.error(f"WebSocket error occurred: {e}", exc_info=True)
-
-
-async def handle_tool_call(tool_name: str, args: Dict[str, Any], suggested_action: str):
-    """Handler für Tool Calls vom Backend."""
-    logger.info(f"⚙️ TOOL CALL: {tool_name}({json.dumps(args)}) - Suggested Action: {suggested_action}")
-    await simulate_tool_call(tool_name, args, suggested_action)
-
 
 async def handle_backend_message(data: Union[AllIncomingJsonEvents, bytes]):
     """Verarbeitet eingehende Nachrichten vom Backend."""
@@ -163,24 +152,6 @@ async def handle_backend_message(data: Union[AllIncomingJsonEvents, bytes]):
     else:
         logger.warning(f"Received unexpected message format: {type(data)} - {data}")
 
-async def simulate_tool_call(tool_name: str, args: Dict[str, Any], suggested_action: str):
-    logger.info(f"Simulating Tool Call: {tool_name} with args {args} and action '{suggested_action}'")
-    
-    if tool_name == "set_led_color":
-        color = args.get("color", "unknown")
-        duration = args.get("duration_seconds", 1)
-        logger.info(f"  -> Simulating: Set LED color to {color} for {duration} seconds.")
-    elif tool_name == "play_sound_effect":
-        effect_name = args.get("effect_name", "beep")
-        logger.info(f"  -> Simulating: Play sound effect '{effect_name}'.")
-        print(f"  [Sound Effect: {effect_name}]")
-    elif tool_name == "get_sensor_data":
-        sensor_type = args.get("sensor_type", "temperature")
-        logger.info(f"  -> Simulating: Get data from {sensor_type} sensor.")
-        print(f"  [Sensor Reading: {sensor_type} = 25.0 C (simulated)]")
-    else:
-        logger.warning(f"  -> Unknown tool call simulation for '{tool_name}'.")
-
 def get_user_input_blocking():
     """Kapselt den blockierenden input()-Aufruf für den Text-Chat."""
     return input("Enter message (or 'exit' to quit): ")
@@ -190,8 +161,9 @@ async def main():
 
     logger.info("Starting Squishy Pi Client.")
 
-    hardware_handler = HardwareHandler(on_sensor_update_callback=send_sensor_data_to_gemini)
-    await hardware_handler.start()
+    hardware_handler = HardwareHandler(
+        on_sensor_update_callback=send_sensor_data_to_gemini,
+    )
 
     websocket_client = WebSocketClient(
         ws_url=BACKEND_WS_URL,
@@ -201,7 +173,8 @@ async def main():
         on_connect_callback=on_websocket_connect,
         on_error_callback=on_websocket_error
     )
-    websocket_client.set_tool_call_handler(handle_tool_call)
+
+    websocket_client.set_tool_call_handler(hardware_handler.handle_tool_call)
 
     audio_input_handler = AudioInputHandler(
         on_audio_data_callback=send_recorded_audio_to_websocket,
@@ -218,6 +191,7 @@ async def main():
     playback_task = asyncio.create_task(audio_playback_worker())
 
     await websocket_client.connect()
+    await hardware_handler.start()
     await asyncio.sleep(2) 
 
     if websocket_client.is_connected:
@@ -271,6 +245,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Client stopped by user (KeyboardInterrupt).")
+        logger.info("Client stopped by user (KeyboardInterrupt). 🪦 ")
+        pass
     except Exception as e:
         logger.exception("An unexpected error occurred in main.")

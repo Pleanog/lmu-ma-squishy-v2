@@ -37,12 +37,26 @@ class HardwareHandler:
         if self.monitor_task:
             self.monitor_task.cancel()
 
-    def handle_tool_call(self, tool_name: str, args: dict):
+    def handle_tool_call(self, tool_name: str, args: dict, suggested_action: str = ""):
         """Verteilt einkommende KI-Befehle an den richtigen Aktor."""
+        
+        if suggested_action == "simulate" or suggested_action == "visualize":
+            logger.debug(f"Suggested_action='{suggested_action}': Simuliere Tool Call '{tool_name}' mit args {args} (kein physischer Effekt).")
+            return
+
+        logger.info(f"Führe Tool aus: {tool_name} (Aktion: {suggested_action})")
+
         if tool_name == "set_led_color":
             self.leds.send_command(args)
         elif tool_name == "vibrate":
             self.motor.send_command(args)
+        elif tool_name == "Task-12": # Aus deinen Logs: Gemini nutzt manchmal Task-12
+            logger.info(f"Spezial-Task-12 empfangen mit args: {args}")
+            # Leite es je nach Argument an LED oder Motor weiter
+            if "color" in args:
+                self.leds.send_command(args)
+            elif "pattern" in args or "sound_type" in args:
+                self.motor.send_command(args)
         else:
             logger.warning(f"Unbekanntes Tool für Hardware: {tool_name}")
 
