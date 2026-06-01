@@ -1,7 +1,5 @@
-try:
-    import sounddevice as sd
-except Exception:  # sounddevice may be unavailable in some environments
-    sd = None
+# client/audio_handler.py
+import sounddevice as sd
 import numpy as np
 import logging
 from typing import Optional
@@ -21,8 +19,13 @@ class AudioHandler:
         self.output_stream: Optional[sd.OutputStream] = None
         self._initialize_output_stream()
 
+        # Für die Steuerung der sequentiellen Audiowiedergabe
+        self.next_play_time: float = 0.0 # Hält den Zeitpunkt für das nächste Audio-Chunk
+        self.scheduled_sources: list = [] # Hält Referenzen zu den geplanten AudioBufferSourceNodes
+
     def _get_hifiberry_device_index(self) -> Optional[int]:
         if sd is None:
+            logger.warning("sounddevice module not available; cannot query devices.")
             return None
         devices = sd.query_devices()
         logger.debug("Scanning available sound devices...")
@@ -52,6 +55,9 @@ class AudioHandler:
             )
             self.output_stream.start()
             logger.info(f"✅ Audio hardware stream started: {self.samplerate}Hz, {self.channels} Ch, Mode: {self.dtype}")
+            # Initialisiere next_play_time basierend auf der aktuellen Stream-Zeit
+            if self.output_stream:
+                self.next_play_time = self.output_stream.time
         except Exception as e:
             logger.error(f"❌ Failed to initialize hardware audio stream: {e}", exc_info=True)
             self.output_stream = None
@@ -66,7 +72,6 @@ class AudioHandler:
             logger.warning("Skipping playback: Sounddevice or Output Stream is None.")
             return
 
-        # Detailliertes Debug-Logging für den Stream-Input
         byte_length = len(audio_data_bytes)
         logger.debug(f"📥 Received chunk: {byte_length} bytes. Expected incoming samplerate: {incoming_samplerate}Hz")
 
@@ -111,7 +116,44 @@ class AudioHandler:
         except Exception as e:
             logger.error(f"💥 Critical Error during stream playback processing: {e}", exc_info=True)
 
+    # def stop_playback(self):
+    #     """
+    #     Stoppt sofort alle aktuell laufende und geplante Audiowiedergabe.
+    #     Wird für Barge-In verwendet.
+    #     """
+    #     if self.output_stream:
+    #         logger.info("🛑 Audio playback interrupted. Stopping current output stream.")
+    #         # sounddevice.OutputStream hat keine direkte Methode, um den Puffer zu leeren oder sofort zu stoppen
+    #         # außer durch das Beenden des Streams. Dies führt zu einem kurzen Re-Initialisieren,
+    #         # ist aber die zuverlässigste Methode für sofortigen Stop.
+    #         try:
+    #             self.output_stream.stop()
+    #             self.output_stream.close()
+    #             logger.debug("Output stream closed for immediate stop.")
+    #         except Exception as e:
+    #             logger.error(f"Error while trying to stop/close output stream: {e}")
+    #         finally:
+    #             self.output_stream = None # Setze auf None, damit _initialize_output_stream erneut aufgerufen wird
+
+    #         # Re-initialisiere den Stream sofort, damit er für neues Audio bereit ist
+    #         self._initialize_output_stream()
+    #         logger.info("Output stream re-initialized after interruption.")
+    #     else:
+    #         logger.debug("No active output stream to stop.")
+
     def stop_playback(self):
+        """
+        Stoppt sofort alle aktuell laufende und geplante Audiowiedergabe.
+        Wird für Barge-In verwendet.
+        """
+        if self.output_stream:
+            logger.info("🛑 Audio playback interrupted. Relying on queue flush in main.")
+            # WICHTIG: KEIN self.output_stream.stop() oder .close() hier!
+            # Das Verhindert den C-Level ALSA Crash.
+        else:
+            logger.debug("No active output stream to stop.")
+
+    def stop_all_streams(self): # Umbenannt von stop_playback, um die neue Funktion deutlicher zu machen
         if self.output_stream:
             try:
                 self.output_stream.stop()
@@ -122,57 +164,4 @@ class AudioHandler:
             self.output_stream = None
 
     def __del__(self):
-        self.stop_playback()
-
-
-# --- TEST UMGEBUNG (SIMULATION DES GEMINI LIVE STREAMS) ---
-if __name__ == "__main__":
-    import time
-
-    # WICHTIG: Auf DEBUG stellen, damit du im Terminal jeden Schritt siehst!
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-
-    logger.info("Starting AudioHandler Stream-Simulation Test...")
-
-    # Hardware läuft stabil auf 48kHz, float32, Lautstärke auf 3.0 gedreht
-    audio_handler = AudioHandler(hardware_samplerate=48000, channels=2, dtype='float32', volume_factor=2.0)
-
-    if audio_handler.output_stream is not None:
-        # Wir simulieren JETZT die Gemini Live API:
-        # Gemini liefert 24000 Hz, Mono!
-        gemini_sim_samplerate = 24000
-        duration_per_chunk = 0.5  # Gemini schickt meistens kurze Bruchteile einer Sekunde (Chunks)
-        frequency = 440  # Hz Test-Ton
-
-        logger.info(f"🔮 Simulating 4 chunks of incoming 16-Bit PCM data from Gemini ({gemini_sim_samplerate}Hz, Mono)...")
-
-        for chunk_id in range(1, 5):
-            logger.info(f"--- Simulating Chunk #{chunk_id} ---")
-            
-            # Zeitachse für diesen Chunk berechnen
-            t = np.linspace(
-                (chunk_id - 1) * duration_per_chunk,
-                chunk_id * duration_per_chunk,
-                int(gemini_sim_samplerate * duration_per_chunk),
-                endpoint=False
-            )
-            
-            # Sinus-Welle erzeugen
-            wave = 0.4 * np.sin(2 * np.pi * frequency * t)
-            # Konvertieren in echte rohe API-Bytes (int16 Mono)
-            api_bytes = (wave * 32767).astype(np.int16).tobytes()
-
-            # Übergabe an unseren erweiterten Player
-            audio_handler.play_audio(api_bytes, incoming_samplerate=gemini_sim_samplerate)
-            
-            # Kurz warten, bis der nächste API-Chunk eintrudelt
-            time.sleep(duration_per_chunk)
-
-    else:
-        logger.error("Could not initialize AudioHandler hardware stream. Check wiring or config.txt!")
-
-    audio_handler.stop_playback()
-    logger.info("Stream-Simulation complete.")
+        self.stop_all_streams() # Rufe die umbenannte Methode auf

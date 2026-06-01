@@ -13,42 +13,60 @@ from config import CLIENT_CAPABILITIES
 
 logger = logging.getLogger(__name__)
 
-# --- Typen für Backend-Nachrichten (vereinfacht für Text-Chat) ---
-class IncomingBackendJsonEvent:
+# --- Typen für Backend-Nachrichten ---
+# Basis-Event, alle anderen JSON-Events erben davon
+class IncomingBackendJsonEvent(TypedDict):
     type: str
 
-class TranscriptEvent(TypedDict):
-    type: Literal["transcript"]
-    text: str
-    is_final: bool
-
-class ToolCallEvent(TypedDict):
-    type: Literal["tool_call"]
-    tool_name: str
-    args: Dict[str, Any]
-    suggested_action: str
-
 class RegistrationAckEvent(IncomingBackendJsonEvent):
+    type: Literal["registration_ack"]
     client_id: str
     message: str
     active_controller_id: Optional[str]
     current_active_controller_type: Optional[str]
 
+class ActiveControllerChangeEvent(IncomingBackendJsonEvent):
+    type: Literal["active_controller_change"]
+    new_active_controller_id: str
+    new_active_controller_type: str
+
 class AIResponseEvent(IncomingBackendJsonEvent):
+    type: Literal["ai_response"]
     text: str
 
-IncomingBackendJsonEvent = Union[
-    type: str,
+class TranscriptEvent(IncomingBackendJsonEvent):
+    type: Literal["transcript"]
+    text: str
+    is_final: bool
+
+class ToolCallEvent(IncomingBackendJsonEvent):
+    type: Literal["tool_call"]
+    tool_name: str
+    args: Dict[str, Any]
+    suggested_action: str # Hinzugefügt, da es im main.py verwendet wird
+
+class SystemMessageEvent(IncomingBackendJsonEvent): # Annahme, dass es diese geben könnte
+    type: Literal["system_message"]
+    message: str
+
+class ErrorEvent(IncomingBackendJsonEvent): # Annahme, dass es diese geben könnte
+    type: Literal["error"]
+    message: str
+
+# Union-Typ für alle möglichen JSON-Events
+AllIncomingJsonEvents = Union[
     RegistrationAckEvent,
+    ActiveControllerChangeEvent,
     AIResponseEvent,
-    # SystemMessageEvent,
-    # ErrorEvent,
     TranscriptEvent,
     ToolCallEvent,
+    SystemMessageEvent,
+    ErrorEvent,
 ]
 
 # Wir geben entweder geparste JSON-Objekte oder rohe Audio-Bytes weiter
-MessageCallback = Callable[[Union[IncomingBackendJsonEvent, bytes]], Any]
+# Die Callbacks sollten asyncio.Coroutinen sein, da sie awaitable sein müssen
+MessageCallback = Callable[[Union[AllIncomingJsonEvents, bytes]], Any] # Any, da es ein Coroutine sein kann
 OnConnectCallback = Callable[[], Any]
 OnErrorCallback = Callable[[Exception], Any]
 
@@ -59,8 +77,8 @@ class WebSocketClient:
                  client_type: str,
                  capabilities: List[str],
                  on_message_callback: MessageCallback,
-                 on_connect_callback: OnConnectCallback = None,
-                 on_error_callback: OnErrorCallback = None):
+                 on_connect_callback: Optional[OnConnectCallback] = None, # Optional gemacht
+                 on_error_callback: Optional[OnErrorCallback] = None): # Optional gemacht
         
         self.ws_url = ws_url
         self.client_type = client_type
@@ -74,11 +92,12 @@ class WebSocketClient:
         self._active_controller_id: Optional[str] = None
         self._active_controller_type: Optional[str] = None
         self._is_connected = False
+        self._listener_task: Optional[asyncio.Task] = None # Task für _listen_for_messages
 
         # Callbacks für Audio- und Sensor-Daten (Platzhalter für später)
-        self._audio_sender_callback: Optional[Callable[[bytes], None]] = None
-        self._sensor_event_sender_callback: Optional[Callable[[str, str, Any, Optional[str]], None]] = None
-        self._tool_call_handler: Optional[Callable[[str, Dict[str, Any]], None]] = None
+        # self._audio_sender_callback: Optional[Callable[[bytes], None]] = None # Nicht mehr benötigt, da send_audio_chunk direkt genutzt wird
+        self._sensor_event_sender_callback: Optional[Callable[[str, str, Any, Optional[str]], Any]] = None # Any, da async
+        self._tool_call_handler: Optional[Callable[[str, Dict[str, Any], str], Any]] = None # Hinzugefügt suggested_action
 
     @property
     def is_connected(self) -> bool:
@@ -96,47 +115,64 @@ class WebSocketClient:
     def active_controller_type(self) -> Optional[str]:
         return self._active_controller_type
 
-    def set_audio_sender(self, callback: Callable[[bytes], None]):
-        """Setzt den Callback zum Senden von Audio-Chunks an das Backend."""
-        self._audio_sender_callback = callback
+    # Entferne set_audio_sender, da send_audio_chunk direkt eine Methode des Clients ist
 
-    def set_sensor_event_sender(self, callback: Callable[[str, str, Any, Optional[str]], None]):
-        """Setzt den Callback zum Senden von Sensor-Events an das Backend."""
+    def set_sensor_event_sender(self, callback: Callable[[str, str, Any, Optional[str]], Any]):
+        """Setzt den Callback zum Senden von Sensor-Events an das Backend. Erwartet einen awaitable."""
         self._sensor_event_sender_callback = callback
 
-    def set_tool_call_handler(self, callback: Callable[[str, Dict[str, Any]], None]):
-        """Setzt den Handler für eingehende Tool-Calls vom Backend."""
+    def set_tool_call_handler(self, callback: Callable[[str, Dict[str, Any], str], Any]):
+        """Setzt den Handler für eingehende Tool-Calls vom Backend. Erwartet einen awaitable."""
         self._tool_call_handler = callback
 
     async def connect(self):
         logger.info(f"Attempting to connect to WebSocket at {self.ws_url}")
         try:
-            self._websocket = await asyncio.wait_for(websockets.connect(self.ws_url), timeout=5)
+            self._websocket = await asyncio.wait_for(websockets.connect(self.ws_url), timeout=10) # Timeout erhöht
             self._is_connected = True
             logger.info("WebSocket connected. Sending registration...")
             await self._register_client()
             if self._on_connect_callback:
-                self._on_connect_callback()
+                # Da _on_connect_callback ein Coroutine sein könnte, awaiten wir es
+                if asyncio.iscoroutinefunction(self._on_connect_callback):
+                    await self._on_connect_callback()
+                else:
+                    self._on_connect_callback()
             
-            asyncio.create_task(self._listen_for_messages())
+            self._listener_task = asyncio.create_task(self._listen_for_messages())
 
         except asyncio.TimeoutError:
-            logger.error(f"WebSocket connection timed out after 5 seconds: No response from {self.ws_url}")
+            logger.error(f"WebSocket connection timed out after 10 seconds: No response from {self.ws_url}")
             self._is_connected = False
             if self._on_error_callback:
-                self._on_error_callback(asyncio.TimeoutError("timed out during opening handshake"))
+                if asyncio.iscoroutinefunction(self._on_error_callback):
+                    await self._on_error_callback(asyncio.TimeoutError("timed out during opening handshake"))
+                else:
+                    self._on_error_callback(asyncio.TimeoutError("timed out during opening handshake"))
         except websockets.exceptions.WebSocketException as e:
             logger.error(f"WebSocket specific connection failed: {e}")
             self._is_connected = False
             if self._on_error_callback:
-                self._on_error_callback(e)
+                if asyncio.iscoroutinefunction(self._on_error_callback):
+                    await self._on_error_callback(e)
+                else:
+                    self._on_error_callback(e)
         except Exception as e:
             logger.error(f"General connection error: {e}")
             self._is_connected = False
             if self._on_error_callback:
-                self._on_error_callback(e)
+                if asyncio.iscoroutinefunction(self._on_error_callback):
+                    await self._on_error_callback(e)
+                else:
+                    self._on_error_callback(e)
 
     async def disconnect(self):
+        if self._listener_task:
+            self._listener_task.cancel()
+            try:
+                await self._listener_task
+            except asyncio.CancelledError:
+                pass
         if self._websocket:
             logger.info("Disconnecting WebSocket.")
             await self._websocket.close()
@@ -144,6 +180,7 @@ class WebSocketClient:
             self._client_id = None
             self._active_controller_id = None
             self._active_controller_type = None
+            logger.info("WebSocket disconnected.")
 
     async def _register_client(self):
         register_message = {
@@ -159,61 +196,98 @@ class WebSocketClient:
             try:
                 message = await self._websocket.recv()
                 
-                # Check for binary data (audio)
                 if isinstance(message, bytes):
-                    # Da handle_backend_message auch ein Coroutine ist, müssen wir es awaiten
-                    # oder als Task ausführen. Für Audio ist direkter await OK, da es schnell sein sollte.
-                    await self._on_message_callback(message) # <<< Hinzugefügt: await
+                    # _on_message_callback kann eine Coroutine sein
+                    if asyncio.iscoroutinefunction(self._on_message_callback):
+                        asyncio.create_task(self._on_message_callback(message))
+                    else:
+                        self._on_message_callback(message)
                 elif isinstance(message, str):
                     try:
-                        parsed_data = json.loads(message)
-                        logger.debug(f"Received JSON: {parsed_data}")
+                        parsed_data: AllIncomingJsonEvents = json.loads(message)
+                        logger.debug(f"Received JSON: {parsed_data.get('type')}")
 
                         # Handle registration_ack internally
                         if parsed_data.get("type") == "registration_ack":
-                            ack = parsed_data # as RegistrationAckEvent
+                            ack: RegistrationAckEvent = parsed_data
                             self._client_id = ack.get("client_id")
                             self._active_controller_id = ack.get("active_controller_id")
                             self._active_controller_type = ack.get("current_active_controller_type")
-                            logger.info(f"Registered as {self.client_type} with ID {self.client_id}. "
+                            logger.info(f"Registered as {self.client_type} with ID {self._client_id}. "
                                         f"Active Controller: {self._active_controller_type} ({self._active_controller_id})")
-                            asyncio.create_task(self._on_message_callback(parsed_data)) # <<< Hinzugefügt: asyncio.create_task
                         # Handle active_controller_change internally
                         elif parsed_data.get("type") == "active_controller_change":
-                            change = parsed_data
+                            change: ActiveControllerChangeEvent = parsed_data
                             self._active_controller_id = change.get("new_active_controller_id")
                             self._active_controller_type = change.get("new_active_controller_type")
                             logger.info(f"Active controller changed to: {self._active_controller_type} ({self._active_controller_id})")
-                            asyncio.create_task(self._on_message_callback(parsed_data)) # <<< Hinzugefügt: asyncio.create_task
                         # Handle tool_call (for later)
                         elif parsed_data.get("type") == "tool_call":
+                            tool_call: ToolCallEvent = parsed_data
                             if self._tool_call_handler:
-                                tool_name = parsed_data.get("tool_name")
-                                args = parsed_data.get("args", {})
-                                await self._tool_call_handler(tool_name, args) # Tool handler kann await sein
-                            asyncio.create_task(self._on_message_callback(parsed_data)) # <<< Hinzugefügt: asyncio.create_task
+                                # Tool handler kann await sein, daher asyncio.create_task
+                                asyncio.create_task(
+                                    self._tool_call_handler(
+                                        tool_call.get("tool_name", ""),
+                                        tool_call.get("args", {}),
+                                        tool_call.get("suggested_action", "")
+                                    )
+                                )
+                            
+                        # Für alle JSON-Nachrichten, auch die intern gehandhabten, den externen Callback aufrufen
+                        if asyncio.iscoroutinefunction(self._on_message_callback):
+                            asyncio.create_task(self._on_message_callback(parsed_data))
                         else:
-                            # For all other JSON messages (e.g., ai_response, transcript, system_message)
-                            asyncio.create_task(self._on_message_callback(parsed_data)) # <<< Hinzugefügt: asyncio.create_task
+                            self._on_message_callback(parsed_data)
 
                     except json.JSONDecodeError:
                         logger.warning(f"Received non-JSON string message: {message}")
+                    except Exception as e:
+                        logger.error(f"Error processing JSON message: {e}", exc_info=True)
                 else:
                     logger.warning(f"Received unexpected message type: {type(message)} - {message}")
 
-            except websockets.exceptions.ConnectionClosed:
-                logger.info("WebSocket connection closed gracefully.")
+            except websockets.exceptions.ConnectionClosedOK:
+                logger.info("WebSocket connection closed gracefully (OK).")
+                break
+            except websockets.exceptions.ConnectionClosedError as e:
+                logger.error(f"WebSocket connection closed with error: {e}", exc_info=True)
+                if self._on_error_callback:
+                    if asyncio.iscoroutinefunction(self._on_error_callback):
+                        await self._on_error_callback(e)
+                    else:
+                        self._on_error_callback(e)
+                break
+            except asyncio.CancelledError:
+                logger.info("WebSocket listener task cancelled.")
                 break
             except Exception as e:
-                logger.error(f"Error while listening for messages: {e}")
+                logger.error(f"Error in WebSocket listener: {e}", exc_info=True)
+                if self._on_error_callback:
+                    if asyncio.iscoroutinefunction(self._on_error_callback):
+                        await self._on_error_callback(e)
+                    else:
+                        self._on_error_callback(e)
                 break
         self._is_connected = False
+        self._websocket = None # Setze WebSocket auf None nach dem Beenden
         logger.info("Stopped listening for WebSocket messages.")
 
 
     async def _send_json(self, data: Dict[str, Any]):
         if self._websocket and self._is_connected:
-            await self._websocket.send(json.dumps(data))
+            try:
+                await self._websocket.send(json.dumps(data))
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("Tried to send JSON on a closed WebSocket.")
+                self._is_connected = False
+            except Exception as e:
+                logger.error(f"Failed to send JSON message: {e}", exc_info=True)
+                if self._on_error_callback:
+                    if asyncio.iscoroutinefunction(self._on_error_callback):
+                        await self._on_error_callback(e)
+                    else:
+                        self._on_error_callback(e)
         else:
             logger.warning("WebSocket not connected, cannot send JSON data.")
 
@@ -226,14 +300,24 @@ class WebSocketClient:
         }
         await self._send_json(message)
 
-    # Platzhalter für die zukünftige Implementierung von Audio- und Sensor-Senden
     async def send_audio_chunk(self, audio_bytes: bytes):
         """Sends raw audio bytes to the backend."""
         if self._websocket and self._is_connected:
-            # logger.debug(f"Sending audio chunk of size {len(audio_bytes)} bytes.")
-            await self._websocket.send(audio_bytes)
+            try:
+                await self._websocket.send(audio_bytes)
+                # logger.debug(f"Sending audio chunk of size {len(audio_bytes)} bytes.")
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("Tried to send audio on a closed WebSocket.")
+                self._is_connected = False
+            except Exception as e:
+                logger.error(f"Failed to send audio chunk: {e}", exc_info=True)
+                if self._on_error_callback:
+                    if asyncio.iscoroutinefunction(self._on_error_callback):
+                        await self._on_error_callback(e)
+                    else:
+                        self._on_error_callback(e)
         else:
-            logger.warning("WebSocket not connected, cannot send audio chunk.")
+            logger.debug("WebSocket not connected, cannot send audio chunk.") # Debug statt Warning, da oft normal wenn nicht aktiv
 
     async def send_sensor_event(self, sensor_id: str, event_type: str, value: Any, intensity: Optional[str] = None):
         """Sends a simulated sensor event to the backend."""
