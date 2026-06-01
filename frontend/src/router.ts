@@ -26,7 +26,8 @@ const router = createRouter({
 
 router.beforeEach((to, _from, next) => {
 
-  const isAuthenticated = pb.authStore.isValid;
+  // const isAuthenticated = pb.authStore.isValid;
+  const isAuthenticated = true; // TODO: For development purposes, bypass authentication check
 
   if (to.meta.requiresAuth && !isAuthenticated) {
     next('/login');
