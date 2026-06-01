@@ -4,7 +4,8 @@ import asyncio
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Callable
 from uuid import uuid4
-from datetime import datetime # Importiere datetime
+from datetime import datetime
+import time # <-- NEU: Importiere time für Inaktivitäts-Monitor
 
 from google.genai import types
 from models.client_state import ClientCapability
@@ -18,14 +19,20 @@ from models.events import (
 from websocket.manager import WebSocketManager
 from tools.dispatcher import ToolDispatcher
 
-# Behalte create_gemini_audio_output_handler und create_gemini_audio_interrupt_handler
-# oder definiere die Callbacks direkt hier, wie im alten main.py
-# Wenn sie in gemini.handlers sind, stelle sicher, dass sie AudioOutputEvent senden.
-# Für diesen Fix passen wir create_gemini_audio_output_handler an, um AudioOutputEvent zu verwenden.
 from gemini.handlers import create_gemini_audio_output_handler, create_gemini_audio_interrupt_handler
 
-
 logger = logging.getLogger(__name__)
+
+GREEN = '\033[92m'
+GREY = "\033[90m"
+ORANGE = "\033[93m"
+PURPLE = '\033[95m'
+CYAN = '\033[96m'
+DARKCYAN = '\033[36m'
+BLUE = '\033[94m'
+YELLOW = '\033[93m'
+RED = '\033[91m'
+RESET = "\033[0m"
 
 class GeminiSessionManager:
     """
@@ -39,13 +46,18 @@ class GeminiSessionManager:
 
         self.audio_input_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self.text_input_queue: asyncio.Queue[str] = asyncio.Queue()
-        self.video_input_queue: asyncio.Queue[bytes] = asyncio.Queue() # For image chunks
+        self.video_input_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self.tool_response_queue: asyncio.Queue[Tuple[str, str, Dict[str, Any]]] = asyncio.Queue()
 
         self._gemini_live_client: Optional[GeminiLive] = None
         self._gemini_session_task: Optional[asyncio.Task] = None
         self._tool_response_task: Optional[asyncio.Task] = None
-        self._is_running: bool = False
+        # self._is_running: bool = False # <-- Wird ersetzt durch die Prüfung von _gemini_session_task
+        
+        self._inactivity_monitor_task: Optional[asyncio.Task] = None
+        self._last_activity_time = time.time()
+        self.INACTIVITY_TIMEOUT_SECONDS = 300 # 5 Minuten Inaktivität
+        # --------------------------------------------------------
 
         self._last_ai_response_id: Optional[str] = None
 
@@ -58,7 +70,6 @@ class GeminiSessionManager:
             return
 
         tool_mapping: Dict[str, Callable[..., Any]] = {}
-        # Iterate over each Tool object, then over its function_declarations
         for tool_schema in self.tool_dispatcher.get_all_tool_schemas():
             for func_declaration in tool_schema.function_declarations:
                 tool_mapping[func_declaration.name] = self._tool_call_wrapper
@@ -83,7 +94,9 @@ class GeminiSessionManager:
         tool_name = asyncio.current_task().get_name() # GeminiLive sets task name to tool name
         tool_call_id = str(uuid4()) # Generate a unique ID for this specific tool call
 
-        logger.info(f"Gemini requested tool call: {tool_name} with args: {kwargs}. Assigned ID: {tool_call_id}")
+        logger.info( DARKCYAN + f"Gemini requested ToolCall: {tool_name} with args: {kwargs}" + RESET)
+
+        self._last_activity_time = time.time()
 
         tool_call_event = ToolCallEvent(
             tool_call_id=tool_call_id,
@@ -105,29 +118,51 @@ class GeminiSessionManager:
 
     async def _process_tool_responses(self):
         """Continuously processes tool responses coming from clients."""
-        while self._is_running:
+        # Loop sollte laufen, solange die Session aktiv ist, nicht nur _is_running
+        while self._gemini_session_task and not self._gemini_session_task.done(): # <-- Angepasst
             try:
                 tool_call_id, tool_name, result = await self.tool_response_queue.get()
                 if self._gemini_live_client:
-                    logger.info(f"Sending tool response for {tool_name}/{tool_call_id} to Gemini: {result}")
+                    logger.info( GREEN + f"Sending tool response for {tool_name}/{tool_call_id} to Gemini: {result}" + RESET)
                     function_response = types.FunctionResponse(
                         id=tool_call_id,
                         name=tool_name,
                         response=result
                     )
                     await self._gemini_live_client.send_tool_response(function_responses=[function_response])
+                    self._last_activity_time = time.time()
                 else:
-                    logger.warning("GeminiLive client not initialized, cannot send tool response.")
+                    logger.warning(ORANGE + "GeminiLive client not initialized, cannot send tool response." + RESET)
                 self.tool_response_queue.task_done()
             except asyncio.CancelledError:
                 logger.info("Tool response processing task cancelled.")
                 break
             except Exception as e:
                 logger.error(f"Error processing tool response: {e}", exc_info=True)
+    
+    async def _inactivity_monitor(self):
+        """Monitors for inactivity and stops the Gemini session."""
+        try:
+            while True:
+                # Prüfe regelmäßig, aber nicht zu oft
+                await asyncio.sleep(self.INACTIVITY_TIMEOUT_SECONDS / 5) # Z.B. alle 1 Minute (für 5 Min Timeout)
 
-    async def start_session(self):
+                if self._gemini_session_task and not self._gemini_session_task.done():
+                    # Wenn die Session läuft und die letzte Aktivität zu lange her ist
+                    if (time.time() - self._last_activity_time) > self.INACTIVITY_TIMEOUT_SECONDS:
+                        logger.info(RED + f"Gemini session inactive for over {self.INACTIVITY_TIMEOUT_SECONDS}s. Stopping session." + RESET)
+                        await self.stop_session() # Rufe stop_session auf
+                # Wenn keine Session läuft oder sie schon beendet ist, macht der Monitor nichts
+        except asyncio.CancelledError:
+            logger.debug("Inactivity monitor task cancelled.")
+        except Exception as e:
+            logger.error(f"Error in inactivity monitor: {e}", exc_info=True)
+    # ----------------------------------------
+
+
+    async def start_session(self): # Diese Methode wird jetzt von außen aufgerufen, um die Session zu starten
         """Starts the Gemini Live session and all related tasks."""
-        if self._is_running:
+        if self._gemini_session_task and not self._gemini_session_task.done(): # <-- Prüfe, ob Task läuft
             logger.warning("Gemini session is already running.")
             return
 
@@ -137,46 +172,46 @@ class GeminiSessionManager:
             logger.error("Failed to initialize GeminiLive client, cannot start session.")
             return
 
-        self._is_running = True
-        logger.info("Starting Gemini session tasks.")
+        # self._is_running = True # <-- Nicht mehr benötigt
+        logger.info("Starting Gemini session tasks on demand.")
 
         self._tool_response_task = asyncio.create_task(self._process_tool_responses())
 
-        # HIER DIE ANPASSUNG FÜR AUDIO-CALLBACKS:
-        # Die create_gemini_audio_output_handler/interrupt_handler müssen
-        # jetzt ein AudioOutputEvent an den ws_manager senden.
         audio_output_callback = create_gemini_audio_output_handler(self.ws_manager)
         audio_interrupt_callback = create_gemini_audio_interrupt_handler(self.ws_manager)
 
         self._gemini_session_task = asyncio.create_task(
             self._run_gemini_session(audio_output_callback, audio_interrupt_callback)
         )
+        self._inactivity_monitor_task = asyncio.create_task(self._inactivity_monitor()) # <-- NEU: Inaktivitäts-Monitor starten
+        self._last_activity_time = time.time() # <-- Reset Inaktivitäts-Zeit
+        
         await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini session started."))
 
-
-    async def _run_gemini_session(self, audio_output_cb: Callable, audio_interrupt_cb: Optional[Callable]): # Callbacks sind jetzt Parameter
+    async def _run_gemini_session(self, audio_output_cb: Callable, audio_interrupt_cb: Optional[Callable]):
         try:
-            async for response_event_from_gemini_live in self._gemini_live_client.start_session( # Umbenannt für Klarheit
+            # Der `async for` in `self._gemini_live_client.start_session` ist der Reconnection-Loop.
+            # Er wird seine Events (inkl. Session Resumption Updates) hierher liefern.
+            async for response_event_from_gemini_live in self._gemini_live_client.start_session(
                 audio_input_queue=self.audio_input_queue,
                 video_input_queue=self.video_input_queue,
                 text_input_queue=self.text_input_queue,
-                audio_output_callback=audio_output_cb,       # Hier werden die Callbacks übergeben
-                audio_interrupt_callback=audio_interrupt_cb, # Hier werden die Callbacks übergeben
+                audio_output_callback=audio_output_cb,
+                audio_interrupt_callback=audio_interrupt_cb,
             ):
-
+                # Jedes Event von Gemini Live bedeutet Aktivität
+                self._last_activity_time = time.time() # <-- WICHTIG: Reset Inaktivitäts-Zeit
+                
                 if not response_event_from_gemini_live:
                     continue
 
-                logger.info(f"RESPONSE TYPE from gemini_live.py: {type(response_event_from_gemini_live)}")
-                logger.debug(f"FULL RESPONSE from gemini_live.py: {response_event_from_gemini_live}")
+                # logger.info(f"RESPONSE TYPE from gemini_live.py: {type(response_event_from_gemini_live)}")
+                # logger.debug(f"FULL RESPONSE from gemini_live.py: {response_event_from_gemini_live}")
 
-                # Die event_queue in gemini_live.py sendet DICTS, nicht die direkten genai.types.Responses.
-                # Wir müssen diese DICTS jetzt parsen und in unsere Pydantic Events umwandeln.
-                
                 response_type = response_event_from_gemini_live.get("type")
 
                 if response_type == "gemini":
-                    # Dies ist eine Text-Transkription aus Gemini's output
+                    # Text-Transkription aus Gemini's output
                     text = response_event_from_gemini_live.get("text")
                     if text:
                         ai_response_event = AIResponseEvent(
@@ -184,61 +219,75 @@ class GeminiSessionManager:
                             timestamp=datetime.utcnow()
                         )
                         await self.ws_manager.broadcast(ai_response_event)
-                        logger.info(f"AI Response (Text): {text}")
+                        # logger.info(f"AI Response (Text): {text}")
                 
                 elif response_type == "user":
-                    # Dies ist eine Text-Transkription aus Gemini's input (des Nutzers)
+                    # Text-Transkription aus Gemini's input (des Nutzers)
                     text = response_event_from_gemini_live.get("text")
                     if text:
                         transcript_event = TranscriptEvent(
                             text=text,
-                            is_final=True, # gemini_live.py sendet finale Transkriptionen
+                            is_final=True,
                             timestamp=datetime.utcnow()
                         )
                         await self.ws_manager.broadcast(transcript_event)
                         logger.info(f"User Transcript: {text}")
 
                 elif response_type == "tool_call":
-                    # Tool calls werden im _tool_call_wrapper bereits gehandhabt,
-                    # aber gemini_live.py kann hier auch ein vereinfachtes dict senden.
-                    # Wir sollten sicherstellen, dass wir hier keine doppelten Events erzeugen,
-                    # oder dass dieses Event nur zur Info ist.
-                    # Die primäre ToolCallEvent-Erzeugung findet in _tool_call_wrapper statt.
                     logger.debug(f"Received tool_call notification from gemini_live.py event_queue: {response_event_from_gemini_live}")
-                    # Wenn du dieses Event an Clients senden möchtest, müsstest du es
-                    # in ein ToolCallEvent (Pydantic) umwandeln und broadcasten.
-                    # Das _tool_call_wrapper kümmert sich bereits darum, daher hier nur Debugging.
                 
                 elif response_type == "turn_complete":
                     logger.debug("Gemini turn complete.")
-                    # Optional: Ein Event senden, wenn ein Turn abgeschlossen ist
-                    # await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini turn completed.", timestamp=datetime.utcnow()))
                 
                 elif response_type == "interrupted":
                     logger.debug("Gemini interrupted.")
-                    # AudioInterruptEvent wird vom audio_interrupt_cb gesendet,
-                    # daher hier keine weitere Aktion nötig, wenn der Callback verwendet wird.
                 
                 elif response_type == "error":
                     error_msg = response_event_from_gemini_live.get("error", "Unknown error from Gemini Live.")
                     logger.error(f"Error from Gemini Live event_queue: {error_msg}")
                     await self.ws_manager.broadcast(ErrorEvent(message=f"Gemini Live Error: {error_msg}", timestamp=datetime.utcnow()))
                 
+                elif response_type == "session_resumption_update": # <-- NEU: Behandle dieses Event
+                    # GeminiLive Client managed _current_session_handle selbst, hier nur Log
+                    logger.info(f"Session resumption update received in GeminiSessionManager: {response_event_from_gemini_live}")
+                    await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini session resumed/updated."))
+
+                elif response_type == "go_away": # <-- NEU: Behandle dieses Event
+                    # GeminiLive Client managed reconnect, hier nur Log und Systemnachricht
+                    logger.warning(f"Gemini Live signaled GoAway. Reconnection handled by GeminiLive client. Time left: {response_event_from_gemini_live.get('time_left')}")
+                    await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini Live signaling connection close. Attempting to reconnect."))
+
                 else:
                     logger.warning(f"Unhandled event type from gemini_live.py event_queue: {response_type}")
                     logger.debug(f"Full unhandled event: {response_event_from_gemini_live}")
 
+        except asyncio.CancelledError:
+            logger.info(RED + "Gemini session runner task cancelled." + RESET)
         except Exception as e:
-            logger.error(f"Error in Gemini session: {e}", exc_info=True)
+            logger.error(RED + f"Critical error in Gemini session runner: {e}" + RESET, exc_info=True)
+        finally:
+            logger.info("Gemini session runner exiting.")
+            # Important: The _run_gemini_session task has completed.
+            # This doesn't mean the session is fully stopped, _gemini_live_client.start_session()
+            # manages its own reconnection loop. We only stop our tasks if explicitly called.
+
 
     async def stop_session(self):
         """Stops the Gemini Live session and associated tasks."""
-        if not self._is_running:
-            logger.info("Gemini session is not running.")
+        if not (self._gemini_session_task and not self._gemini_session_task.done()): # <-- Prüfe, ob Task läuft
+            logger.info(ORANGE + "Gemini session is not running." + RESET)
             return
 
-        logger.info("Stopping Gemini session tasks.")
-        self._is_running = False
+        logger.info(GREEN + "Stopping Gemini session tasks gracefully." + RESET)
+        # self._is_running = False # <-- Nicht mehr benötigt
+
+        if self._inactivity_monitor_task: # <-- NEU: Inaktivitäts-Monitor stoppen
+            self._inactivity_monitor_task.cancel()
+            try:
+                await self._inactivity_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._inactivity_monitor_task = None
 
         if self._gemini_session_task:
             self._gemini_session_task.cancel()
@@ -246,6 +295,7 @@ class GeminiSessionManager:
                 await self._gemini_session_task
             except asyncio.CancelledError:
                 pass
+            self._gemini_session_task = None # Setze den Task auf None
 
         if self._tool_response_task:
             self._tool_response_task.cancel()
@@ -253,8 +303,11 @@ class GeminiSessionManager:
                 await self._tool_response_task
             except asyncio.CancelledError:
                 pass
+            self._tool_response_task = None # Setze den Task auf None
 
         # Clear queues
+        # Wichtig: Queues leeren, wenn die Session wirklich beendet wird, um keine alten Daten zu behalten
+        # wenn der Benutzer später eine neue Session startet.
         while not self.audio_input_queue.empty():
             await self.audio_input_queue.get()
             self.audio_input_queue.task_done()
@@ -268,5 +321,5 @@ class GeminiSessionManager:
             await self.tool_response_queue.get()
             self.tool_response_queue.task_done()
 
-        logger.info("GeminiSessionManager stopped.")
+        logger.info(GREEN + "GeminiSessionManager stopped." + RESET)
         await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini session has been stopped."))

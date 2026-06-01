@@ -11,6 +11,17 @@ from models.client_state import ClientCapability, ClientType
 
 logger = logging.getLogger(__name__)
 
+GREEN = '\033[92m'
+GREY = "\033[90m"
+ORANGE = "\033[93m"
+PURPLE = '\033[95m'
+CYAN = '\033[96m'
+DARKCYAN = '\033[36m'
+BLUE = '\033[94m'
+YELLOW = '\033[93m'
+RED = '\033[91m'
+RESET = "\033[0m"
+
 class MessageRouter:
     """
     Routes incoming WebSocket events to the appropriate handlers.
@@ -39,23 +50,27 @@ class MessageRouter:
         if is_active_controller:
             if isinstance(event, IncomingEvent.AUDIO_CHUNK.model):
                 if ClientCapability.AUDIO_INPUT in client.state.capabilities:
+                    await self.gemini_session.start_session() 
                     await self.gemini_session.audio_input_queue.put(event.data)
                     logger.debug(f"Client {client_id} (active controller) sent audio chunk.")
                 else:
                     logger.warning(f"Active controller {client_id} lacks AUDIO_INPUT capability.")
             elif isinstance(event, IncomingEvent.TEXT_MESSAGE.model):
                 if ClientCapability.TEXT_INPUT in client.state.capabilities:
+                    await self.gemini_session.start_session() 
                     await self.gemini_session.text_input_queue.put(event.text)
                     logger.debug(f"Client {client_id} (active controller) sent text message.")
                 else:
                     logger.warning(f"Active controller {client_id} lacks TEXT_INPUT capability.")
             elif isinstance(event, IncomingEvent.IMAGE_CHUNK.model):
                 # Always allow image input, active controller or not, if Gemini supports it
+                await self.gemini_session.start_session()
                 await self.gemini_session.video_input_queue.put(event.data)
                 logger.debug(f"Client {client_id} sent image chunk.")
             elif isinstance(event, IncomingEvent.SENSOR_EVENT.model):
                 if client.state.client_type == ClientType.HARDWARE and ClientCapability.SENSOR_INPUT in client.state.capabilities:
                     # Translate sensor event to natural language for Gemini
+                    await self.gemini_session.start_session()
                     sensor_text = f"System: Sensor '{event.sensor_id}' detected event '{event.event}' with value '{event.value}'."
                     if event.intensity:
                         sensor_text += f" Intensity: {event.intensity}."
@@ -63,6 +78,7 @@ class MessageRouter:
                     logger.info(f"Hardware client {client_id} (active controller) sent sensor event: {event.sensor_id}")
                 elif client.state.client_type == ClientType.FRONTEND and ClientCapability.SENSOR_SIMULATION in client.state.capabilities:
                     # Frontend simulates sensor event
+                    await self.gemini_session.start_session()
                     simulated_sensor_text = f"System (simulated): Sensor '{event.sensor_id}' detected event '{event.event}' with value '{event.value}'."
                     if event.intensity:
                         simulated_sensor_text += f" Intensity: {event.intensity}."

@@ -8,6 +8,17 @@ from google import genai
 from google.genai import types
 from system_promt import system_promt;
 
+GREEN = '\033[92m'
+GREY = "\033[90m"
+ORANGE = "\033[93m"
+PURPLE = '\033[95m'
+CYAN = '\033[96m'
+DARKCYAN = '\033[36m'
+BLUE = '\033[94m'
+YELLOW = '\033[93m'
+RED = '\033[91m'
+RESET = "\033[0m"
+
 class GeminiLive:
     """
     Handles the interaction with the Gemini Live API.
@@ -29,8 +40,12 @@ class GeminiLive:
         self.client = genai.Client(api_key=api_key)
         self.tools = tools or []
         self.tool_mapping = tool_mapping or {}
+        self._current_session_handle = None # Speichert den Handle für die Wiederaufnahme der Session
+        self._client_message_index = 0 # Um den letzten gesendeten Nachrichtenindex zu verfolgen
+        self._last_sent_client_message_index = 0 # Trackt den Index der zuletzt gesendeten Nachricht für die Wiederaufnahme
 
-    async def start_session(self, audio_input_queue, video_input_queue, text_input_queue, audio_output_callback, audio_interrupt_callback=None):
+    async def _connect_and_receive(self, audio_input_queue, video_input_queue, text_input_queue, audio_output_callback, audio_interrupt_callback):
+        """Internal method to handle a single connection attempt and receive loop."""
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
             speech_config=types.SpeechConfig(
@@ -48,16 +63,25 @@ class GeminiLive:
             ),
             tools=self.tools,
         )
-        
-        logger.info(f"Connecting to Gemini Live with model={self.model}")
-        try:
-          async with self.client.aio.live.connect(model=self.model, config=config) as session:
-            logger.info("Gemini Live session opened successfully")
+                
+        if self._current_session_handle:
+            config.session_resumption_config = types.LiveSessionResumptionConfig(
+                session_handle=self._current_session_handle,
+                last_consumed_client_message_index=self._client_message_index 
+            )
+            logger.info(f"Attempting to resume Gemini Live session with handle: {self._current_session_handle}, starting client_message_index from {self._client_message_index}")
+        else:
+            logger.info(f"Connecting to Gemini Live with model={self.model}")
+            self._last_sent_client_message_index = 0 # Reset for new session
+
+        async with self.client.aio.live.connect(model=self.model, config=config) as session:
+            logger.info(GREEN + "Gemini Live session opened successfully" + RESET + (f" (resumed with handle: {self._current_session_handle})" if self._current_session_handle else ""))
             
             async def send_audio():
                 try:
                     while True:
                         chunk = await audio_input_queue.get()
+                        self._last_sent_client_message_index += 1
                         await session.send_realtime_input(
                             audio=types.Blob(data=chunk, mime_type=f"audio/pcm;rate={self.input_sample_rate}")
                         )
@@ -70,6 +94,7 @@ class GeminiLive:
                 try:
                     while True:
                         chunk = await video_input_queue.get()
+                        self._last_sent_client_message_index += 1
                         logger.info(f"Sending video frame to Gemini: {len(chunk)} bytes")
                         await session.send_realtime_input(
                             video=types.Blob(data=chunk, mime_type="image/jpeg")
@@ -83,6 +108,7 @@ class GeminiLive:
                 try:
                     while True:
                         text = await text_input_queue.get()
+                        self._last_sent_client_message_index += 1
                         logger.info(f"Sending text to Gemini: {text}")
                         await session.send_realtime_input(text=text)
                 except asyncio.CancelledError:
@@ -92,18 +118,26 @@ class GeminiLive:
 
             event_queue = asyncio.Queue()
 
-            async def receive_loop():
+
+            async def receive_loop_inner():
                 try:
                     while True:
                         async for response in session.receive():
-                            logger.debug(f"Received response from Gemini: {response}")
-                            
-                            # Log the raw response type for debugging
+
                             if response.go_away:
-                                logger.warning(f"Received GoAway from Gemini: {response.go_away}")
-                            if response.session_resumption_update:
-                                logger.info(f"Session resumption update: {response.session_resumption_update}")
+                                logger.warning(ORANGE + f"Received GoAway from Gemini: {response.go_away.time_left}. Initiating graceful shutdown." + RESET)
+                                await event_queue.put({"type": "go_away", "time_left": response.go_away.time_left})
+                                return # Exit receive loop
                             
+                            if response.session_resumption_update:
+                                self._current_session_handle = response.session_resumption_update.new_handle
+                                if response.session_resumption_update.last_consumed_client_message_index is not None:
+                                    self._client_message_index = response.session_resumption_update.last_consumed_client_message_index
+                                    self._last_sent_client_message_index = max(self._last_sent_client_message_index, self._client_message_index)
+
+                                logger.info(f"Session resumption update: new_handle='{self._current_session_handle}' resumable={response.session_resumption_update.resumable} last_consumed_client_message_index={self._client_message_index}")
+                                await event_queue.put({"type": "session_resumption_update", "handle": self._current_session_handle, "resumable": response.session_resumption_update.resumable, "last_consumed_client_message_index": self._client_message_index})                            
+
                             server_content = response.server_content
                             tool_call = response.tool_call
                             
@@ -111,6 +145,7 @@ class GeminiLive:
                                 if server_content.model_turn:
                                     for part in server_content.model_turn.parts:
                                         if part.inline_data:
+                                            logger.info(GREY + f"Gemini audio chunk: {len(part.inline_data.data)} bytes" + RESET)
                                             if inspect.iscoroutinefunction(audio_output_callback):
                                                 await audio_output_callback(part.inline_data.data)
                                             else:
@@ -118,12 +153,16 @@ class GeminiLive:
                                 
                                 if server_content.input_transcription and server_content.input_transcription.text:
                                     await event_queue.put({"type": "user", "text": server_content.input_transcription.text})
-                                
+
                                 if server_content.output_transcription and server_content.output_transcription.text:
                                     await event_queue.put({"type": "gemini", "text": server_content.output_transcription.text})
-                                
+                                    logger.debug( CYAN + f"{server_content.output_transcription.text}" + RESET  )
+        
                                 if server_content.turn_complete:
+                                    last_consumed_index = response.session_resumption_update.last_consumed_client_message_index if response.session_resumption_update else None
+                                    logger.info(f"Turn complete. last_consumed_client_message_index={last_consumed_index}")
                                     await event_queue.put({"type": "turn_complete"})
+
                                 
                                 if server_content.interrupted:
                                     if audio_interrupt_callback:
@@ -131,7 +170,8 @@ class GeminiLive:
                                             await audio_interrupt_callback()
                                         else:
                                             audio_interrupt_callback()
-                                    await event_queue.put({"type": "interrupted"})
+                                    await event_queue.put({"type": "interrupted"}) 
+                                    logger.info("Received interruption signal from Gemini.")
 
                             if tool_call:
                                 function_responses = []
@@ -156,7 +196,7 @@ class GeminiLive:
                                             response={"result": result}
                                         ))
                                         await event_queue.put({"type": "tool_call", "name": func_name, "args": args, "result": result})
-                                
+                                        logger.info(f"Handled tool call for '{func_name}' with args {args} and result {result}")
                                 await session.send_tool_response(function_responses=function_responses)
                         
                         # session.receive() iterator ended (e.g. after turn_complete) — re-enter to keep listening
@@ -174,26 +214,52 @@ class GeminiLive:
             send_audio_task = asyncio.create_task(send_audio())
             send_video_task = asyncio.create_task(send_video())
             send_text_task = asyncio.create_task(send_text())
-            receive_task = asyncio.create_task(receive_loop())
+            receive_task = asyncio.create_task(receive_loop_inner())
 
             try:
                 while True:
                     event = await event_queue.get()
-                    if event is None:
+                    if event is None: # Loop finished or error
                         break
-                    if isinstance(event, dict) and event.get("type") == "error":
-                        # Just yield the error event, don't raise to keep the stream alive if possible or let caller handle
-                        yield event
-                        break 
                     yield event
             finally:
-                logger.info("Cleaning up Gemini Live session tasks")
+                logger.info("Cleaning up Gemini Live session tasks for current connection")
                 send_audio_task.cancel()
                 send_video_task.cancel()
                 send_text_task.cancel()
                 receive_task.cancel()
-        except Exception as e:
-            logger.error(f"Gemini Live session error: {type(e).__name__}: {e}\n{traceback.format_exc()}")
-            raise
-        finally:
-            logger.info("Gemini Live session closed")
+                await asyncio.gather(send_audio_task, send_video_task, send_text_task, receive_task, return_exceptions=True) # Ensure tasks are cleaned up
+
+    async def start_session(self, audio_input_queue, video_input_queue, text_input_queue, audio_output_callback, audio_interrupt_callback=None):
+        """
+        Manages the lifecycle of the Gemini Live session, including reconnections.
+        """
+        reconnection_delay = 1  # seconds
+        max_reconnection_delay = 60 # seconds
+        
+        while True:
+            try:
+                # Iterate over the internal connection and its events
+                async for event in self._connect_and_receive(audio_input_queue, video_input_queue, text_input_queue, audio_output_callback, audio_interrupt_callback):
+                    if event.get("type") == "go_away":
+                        logger.info(f"Gemini Live session explicitly asked to close. Attempting to reconnect in {reconnection_delay}s.")
+                        break # Exit inner async for loop to trigger outer while loop for reconnect
+                    elif event.get("type") == "error":
+                        logger.error(f"Error within Gemini Live session: {event.get('error')}. Attempting to reconnect in {reconnection_delay}s.")
+                        yield event # Propagate the error
+                        break # Exit inner async for loop for reconnect
+                    yield event # Propagate all other events
+
+                # If we broke out of the inner loop (due to GoAway or error), attempt reconnect
+                await asyncio.sleep(reconnection_delay)
+                reconnection_delay = min(reconnection_delay * 2, max_reconnection_delay) # Exponential backoff
+
+            except Exception as e:
+                logger.error(f"Critical error in Gemini Live session management: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+                # Yield error to the main app if it's a critical, non-recoverable error at this level
+                yield {"type": "error", "error": f"Critical Gemini Live error: {type(e).__name__}: {e}"}
+                await asyncio.sleep(reconnection_delay) # Wait before trying again
+                reconnection_delay = min(reconnection_delay * 2, max_reconnection_delay)
+
+            finally:
+                logger.info("Gemini Live outer session loop preparing for next connection attempt.")

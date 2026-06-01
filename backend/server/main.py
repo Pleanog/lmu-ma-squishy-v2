@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import colorlog
 import httpx # For PocketBase API interactions
 import json
 
@@ -18,10 +19,47 @@ from tools.squishy_tools import squishy_tools # The actual tool definitions
 from models.events import ErrorEvent, SystemMessageEvent
 
 # --- Logging Setup ---
-logging.basicConfig(level=logging.INFO)
-logging.getLogger("gemini_live").setLevel(logging.DEBUG) # Detailed Gemini Live logs
+console_handler = colorlog.StreamHandler()
+console_handler.setFormatter(
+    colorlog.ColoredFormatter(
+        "%(log_color)s%(levelname)-8s%(reset)s "
+        "\033[90m%(name)s\033[0m: "
+        "%(message)s",
+        log_colors={
+            "DEBUG": "cyan",
+            "INFO": "green",
+            "WARNING": "yellow",
+            "ERROR": "red",
+            "CRITICAL": "red,bg_white",
+        },
+    )
+)
+
+GREEN = '\033[92m'
+GREY = "\033[90m"
+ORANGE = "\033[93m"
+PURPLE = '\033[95m'
+CYAN = '\033[96m'
+DARKCYAN = '\033[36m'
+BLUE = '\033[94m'
+YELLOW = '\033[93m'
+RED = '\033[91m'
+RESET = "\033[0m"
+
+# Configure root logger
+root_logger = logging.getLogger()
+root_logger.handlers.clear()
+root_logger.addHandler(console_handler)
+root_logger.setLevel(logging.INFO)
+
+# Configure specific logger levels
+logging.getLogger("gemini_live").setLevel(logging.DEBUG)
 logging.getLogger("uvicorn").setLevel(logging.INFO)
-logging.getLogger("httpx").setLevel(logging.WARNING) # Reduce noise from httpx
+logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Logger for this file
 logger = logging.getLogger(__name__)
 
 # --- Global State / Dependency Injection Containers ---
@@ -59,8 +97,8 @@ async def lifespan(app: FastAPI):
     Initializes global services.
     """
     global ws_manager, tool_dispatcher, gemini_session_manager, message_router
-
-    logger.info("Starting up Squishy 2.0 Backend...")
+    
+    logger.info(GREEN + "Starting Squishy 2.0 Backend Server" + RESET)
 
     # 1. Initialize WebSocket Manager
     ws_manager = WebSocketManager()
@@ -79,21 +117,24 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks
     asyncio.create_task(ws_manager.start_event_processing())
-    asyncio.create_task(gemini_session_manager.start_session()) # Start Gemini session loop
+    # asyncio.create_task(gemini_session_manager.start_session()) # Start Gemini session loop manuell on startup, aber Session selbst startet jetzt on demand
 
     # Authenticate with PocketBase on startup
     pb_token = await get_pb_admin_token()
     if pb_token:
-        logger.info("PocketBase admin token acquired.")
+        logger.info(GREEN + "PocketBase admin token acquired." + RESET)
         # Store token globally if needed, or pass to a PocketBase client instance
     else:
-        logger.warning("Could not acquire PocketBase admin token on startup.")
+        logger.warning(ORANGE + "Could not acquire PocketBase admin token on startup." + RESET)
 
-    logger.info("Squishy 2.0 Backend startup complete.")
+    logger.info(GREEN + "Squishy 2.0 Backend startup complete." + RESET)
+    logger.info(CYAN + "Gemini session will start on demand." + RESET)
+
     yield
     logger.info("Shutting down Squishy 2.0 Backend...")
+    logger.info(ORANGE + "Stopping Gemini session..." + RESET)
     await gemini_session_manager.stop_session()
-    logger.info("Squishy 2.0 Backend shutdown complete.")
+    logger.info(GREEN + "Squishy 2.0 Backend shutdown complete." + RESET)
 
 
 app = FastAPI(

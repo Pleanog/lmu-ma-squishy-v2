@@ -13,6 +13,17 @@ from models.events import IncomingEventType, IncomingEvent, OutgoingEventType, B
 
 logger = logging.getLogger(__name__)
 
+GREEN = '\033[92m'
+GREY = "\033[90m"
+ORANGE = "\033[93m"
+PURPLE = '\033[95m'
+CYAN = '\033[96m'
+DARKCYAN = '\033[36m'
+BLUE = '\033[94m'
+YELLOW = '\033[93m'
+RED = '\033[91m'
+RESET = "\033[0m"
+
 class WebSocketClient:
     """
     Manages a single WebSocket connection and its associated client state.
@@ -24,11 +35,11 @@ class WebSocketClient:
         self._send_queue: asyncio.Queue[Union[OutgoingEventType, bytes]] = asyncio.Queue()
         self._send_task: Optional[asyncio.Task] = None
         self._disconnect_event: asyncio.Event = asyncio.Event()
-        logger.info(f"Client {self.client_id}: Initialized.")
+        logger.info(f"{GREEN}Client {self.client_id}: Initialized.{RESET}")
 
     async def accept(self):
         await self.websocket.accept()
-        logger.info(f"Client {self.client_id}: WebSocket accepted.")
+        logger.info(f"{GREEN}Client {self.client_id}: WebSocket accepted.{RESET}")
         self._send_task = asyncio.create_task(self._send_loop())
 
     def set_state(self, client_type: ClientType, capabilities: Set[ClientCapability]):
@@ -37,7 +48,10 @@ class WebSocketClient:
             client_type=client_type,
             capabilities=capabilities
         )
-        logger.info(f"Client {self.client_id}: State set to {self.state.client_type} with capabilities: {self.state.capabilities}")
+        logger.info(
+            f"{GREY}Client {self.client_id}: State set to "
+            f"{self.state.client_type} with capabilities: {self.state.capabilities}{RESET}"
+        )
 
     async def send_event(self, event: OutgoingEventType):
         if self._disconnect_event.is_set():
@@ -82,10 +96,10 @@ class WebSocketClient:
                 
                 self._send_queue.task_done()
         except WebSocketDisconnect:
-            logger.info(f"Client {self.client_id}: WebSocket disconnected during send loop.")
+            logger.info(ORANGE + f"Client {self.client_id}: WebSocket disconnected during send loop." + RESET)
             self._disconnect_event.set()
         except asyncio.CancelledError:
-            logger.info(f"Client {self.client_id}: Send loop cancelled.")
+            logger.info(ORANGE + f"Client {self.client_id}: Send loop cancelled." + RESET)
             self._disconnect_event.set()
         except Exception as e:
             logger.error(f"Client {self.client_id}: Error in send loop: {e}", exc_info=True)
@@ -141,10 +155,10 @@ class WebSocketClient:
                     yield IncomingEvent.AUDIO_CHUNK.model(data=message["bytes"])
 
         except WebSocketDisconnect:
-            logger.info(f"Client {self.client_id}: WebSocket disconnected.")
+            logger.info(ORANGE + f"Client {self.client_id}: WebSocket disconnected." + RESET)
             self._disconnect_event.set()
         except asyncio.CancelledError:
-            logger.info(f"Client {self.client_id}: Receive loop cancelled.")
+            logger.info(ORANGE + f"Client {self.client_id}: Receive loop cancelled." + RESET)
             self._disconnect_event.set()
         except Exception as e:
             logger.error(f"Client {self.client_id}: Error in receive loop: {e}", exc_info=True)
