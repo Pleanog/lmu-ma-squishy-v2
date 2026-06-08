@@ -15,12 +15,14 @@ class AudioInputHandler:
 
     FORMAT = pyaudio.paInt16
     DEFAULT_RATE = 16000  # Standard-Sample-Rate für die Übertragung zum Backend (z.B. Gemini)
-    CHUNK_SIZE = 1024     # Größe des Audio-Buffers pro Lesevorgang
+    # CHUNK_SIZE = 1024     # Größe des Audio-Buffers pro Lesevorgang
+    CHUNK_SIZE = 4096     # Größe des Audio-Buffers pro Lesevorgang
 
     def __init__(self,
                  on_audio_data_callback: Callable[[bytes], Any], # Callback ist jetzt awaitable
                  target_channels: int = 1, # Wir senden Mono an Gemini
-                 device_name_keywords: list[str] = ["UM10", "USB Audio Device"],
+                #  device_name_keywords: list[str] = ["UM10", "USB Audio Device"],
+                 device_name_keywords: list[str] = ["ArrayUAC10", "ReSpeaker"],
                  rates_to_test: list[int] = [48000, 44100, 16000, 32000]):
         """
         Initialisiert den AudioInputHandler.
@@ -140,22 +142,24 @@ class AudioInputHandler:
 
         try:
             while self._is_recording:
-                # Lesen blockiert. asyncio.to_thread() ist hier sicherer, um die Event-Loop nicht zu blockieren,
-                # obwohl PyAudio manchmal behauptet, intern Threads zu nutzen.
                 raw_data = await asyncio.to_thread(
                     self.input_stream.read, self.CHUNK_SIZE, exception_on_overflow=False
                 )
                 
-                processed_data = raw_data
-
-                # Konvertiere zu Mono, falls das Mikrofon Stereo ist und wir Mono senden wollen
-                if self.native_channels > self.target_channels:
-                    audio_array = np.frombuffer(raw_data, dtype=np.int16)
-                    # Simple Stereo zu Mono: Nur den ersten Kanal nehmen
-                    mono_array = audio_array[0::self.native_channels] 
-                    processed_data = mono_array.tobytes()
+                # --- HIER IST DIE ANPASSUNG ---
+                # 1. Byte-Daten in ein NumPy-Array konvertieren (16-bit)
+                # Das Array hat die Form [CHUNK_SIZE, native_channels]
+                audio_array = np.frombuffer(raw_data, dtype=np.int16)
+                audio_array = audio_array.reshape((-1, self.native_channels))
                 
-                # Resampling, wenn chosen_rate != DEFAULT_RATE (z.B. 48kHz Mikrofon, 16kHz Ziel)
+                # 2. Nur Kanal 0 extrahieren (Smart Channel mit HW-Echo-Cancellation)
+                # Damit ist der Loopback (Kanal 5) physikalisch komplett isoliert!
+                mono_data = audio_array[:, 0]
+                
+                processed_data = mono_data.tobytes()
+                # ------------------------------
+                
+                # Resampling, wenn chosen_rate != DEFAULT_RATE 
                 if self.chosen_rate != self.DEFAULT_RATE:
                     downsample_factor = self.chosen_rate // self.DEFAULT_RATE
                     if downsample_factor > 1 and self.chosen_rate % self.DEFAULT_RATE == 0:
@@ -171,9 +175,7 @@ class AudioInputHandler:
                 else:
                     self.on_audio_data_callback(processed_data)
                 
-                # Eine kurze Pause ist hier weniger kritisch, da asyncio.to_thread verwendet wird
-                # Dennoch gut, um anderen Tasks eine Chance zu geben.
-                await asyncio.sleep(0.005) 
+                await asyncio.sleep(0.005)
 
         except asyncio.CancelledError:
             # Wird geworfen, wenn wir mit Strg+C abbrechen

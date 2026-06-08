@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional, Tuple, Callable
 from uuid import uuid4
 from datetime import datetime
 import time # <-- NEU: Importiere time für Inaktivitäts-Monitor
+from functools import partial
 
 from google.genai import types
 from models.client_state import ClientCapability
@@ -63,6 +64,11 @@ class GeminiSessionManager:
 
         logger.info("GeminiSessionManager initialized.")
 
+    @property
+    def is_session_active(self) -> bool:
+        """Prüft dynamisch, ob die Session gerade läuft."""
+        return bool(self._gemini_session_task and not self._gemini_session_task.done())
+
     async def initialize_gemini_client(self):
         """Initializes the GeminiLive client with tools and callbacks."""
         if self._gemini_live_client:
@@ -72,7 +78,8 @@ class GeminiSessionManager:
         tool_mapping: Dict[str, Callable[..., Any]] = {}
         for tool_schema in self.tool_dispatcher.get_all_tool_schemas():
             for func_declaration in tool_schema.function_declarations:
-                tool_mapping[func_declaration.name] = self._tool_call_wrapper
+                # tool_mapping[func_declaration.name] = self._tool_call_wrapper
+                tool_mapping[func_declaration.name] = partial(self._tool_call_wrapper, func_declaration.name)
 
         self._gemini_live_client = GeminiLive(
             api_key=settings.GEMINI_API_KEY,
@@ -83,7 +90,7 @@ class GeminiSessionManager:
         )
         logger.info("GeminiLive client initialized with tool mapping.")
 
-    async def _tool_call_wrapper(self, **kwargs: Any) -> types.FunctionResponse:
+    async def _tool_call_wrapper(self, bound_tool_name: str, **kwargs: Any) -> types.FunctionResponse:
         """
         A wrapper function that GeminiLive calls for tool calls.
         This puts the tool call on a queue for the ToolDispatcher to handle,
@@ -91,7 +98,7 @@ class GeminiSessionManager:
         The actual function response will be sent back to Gemini later
         when a client provides it.
         """
-        tool_name = asyncio.current_task().get_name() # GeminiLive sets task name to tool name
+        tool_name = bound_tool_name
         tool_call_id = str(uuid4()) # Generate a unique ID for this specific tool call
 
         logger.info( DARKCYAN + f"Gemini requested ToolCall: {tool_name} with args: {kwargs}" + RESET)

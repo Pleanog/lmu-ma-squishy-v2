@@ -7,3 +7,4 @@ google-genai
 python-dotenv
 python-multipart
 pyaudio
+scipy
