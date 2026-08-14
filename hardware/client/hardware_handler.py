@@ -1,8 +1,12 @@
 import asyncio
 import logging
 from typing import Callable
-from hardware.base_actuator import LEDActuator, MotorActuator, SoundActuator
-from hardware.base_sensor import TouchSensor, OrientationSensor
+from hardware.base_actuator import MotorActuator, SoundActuator
+from hardware.led_actuator import LEDActuator
+from hardware.touch_sensor import TouchSensor
+from hardware.gyro_sensor import OrientationSensor
+from hardware.flex_sensor import FlexSensor
+
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +24,8 @@ class HardwareHandler:
         # Initialisiere die Sensoren
         self.sensors = [
             TouchSensor("Touch"),
-            OrientationSensor("Gyro")
+            OrientationSensor("Gyro"),
+            FlexSensor("Flex")
         ]
         
         self.monitor_task = None

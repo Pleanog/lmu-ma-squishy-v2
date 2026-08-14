@@ -47,14 +47,6 @@ class BaseActuator:
 
 # --- SIMULIERTE AKTOREN (Später durch echten Code ersetzen) ---
 
-class LEDActuator(BaseActuator):
-    async def execute(self, command: dict):
-        color = command.get("color", "white")
-        duration = command.get("duration", 2)
-        logger.info(f"💡 [LED] Leuchte {color} für {duration} Sekunden...")
-        await asyncio.sleep(duration)
-        logger.info(f"💡 [LED] Aus.")
-
 class MotorActuator(BaseActuator):
     async def execute(self, command: dict):
         pattern = command.get("pattern", "buzz")
@@ -87,6 +79,8 @@ class SoundActuator(BaseActuator):
 
 
 async def main():
+
+    from hardware.hardware.led_actuator import LEDActuator
 
     led = LEDActuator("LED")
     motor = MotorActuator("Motor")
