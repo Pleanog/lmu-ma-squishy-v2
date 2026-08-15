@@ -14,6 +14,9 @@ from client.websocket_client import (
     SystemMessageEvent,
     ErrorEvent,
 )
+
+import numpy as np
+
 from client.audio_handler import AudioHandler
 from client.audio_input_handler import AudioInputHandler
 from client.hardware_handler import HardwareHandler
@@ -24,8 +27,14 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# import sounddevice as sd
+# print("Verfügbare Audio Geräte:")
+# print(sd.query_devices())
+
+NOISE_GATE_THRESHOLD = 300
+
 # Initialisiere den Audio-Output-Handler (für Sprachausgabe vom Backend)
-audio_output_handler = AudioHandler(hardware_samplerate=48000, channels=2, dtype='float32', volume_factor=1.0)
+audio_output_handler = AudioHandler(hardware_samplerate=16000, channels=2, dtype='float32', volume_factor=1.0)
 audio_playback_queue = asyncio.Queue()
 
 async def audio_playback_worker():
@@ -52,22 +61,40 @@ async def send_sensor_data_to_gemini(text_message: str):
 websocket_client: Optional[WebSocketClient] = None
 audio_input_handler: Optional[AudioInputHandler] = None
 
-# Callback für eingehende Audio-Daten vom Mikrofon zum WebSocket
+# # Callback für eingehende Audio-Daten vom Mikrofon zum WebSocket
+# async def send_recorded_audio_to_websocket(audio_bytes: bytes):
+#     """
+#     Diese Funktion wird vom AudioInputHandler aufgerufen, wenn neue Audio-Daten verfügbar sind.
+#     Sie sendet die Daten direkt an den WebSocketClient, wenn dieser der aktive Controller ist.
+#     """
+#     if websocket_client and websocket_client.is_connected:
+#         if websocket_client.client_id == websocket_client.active_controller_id:
+#             await websocket_client.send_audio_chunk(audio_bytes)
+#         # else:
+#             # logger.debug("Nicht aktiver Controller, überspringe das Senden von Audio-Input.")
+#             # Dies ist jetzt eher ein Debug-Fall, da der InputHandler gestoppt werden sollte
+#             # wenn wir nicht der aktive Controller sind.
+#     # else:
+#         # logger.debug("WebSocketClient nicht verbunden oder nicht verfügbar. Überspringe das Senden von Audio-Input.")
 async def send_recorded_audio_to_websocket(audio_bytes: bytes):
-    """
-    Diese Funktion wird vom AudioInputHandler aufgerufen, wenn neue Audio-Daten verfügbar sind.
-    Sie sendet die Daten direkt an den WebSocketClient, wenn dieser der aktive Controller ist.
-    """
+    """Sende Audio an WebSocket, filtert aber Hintergrundrauschen und Echos heraus."""
     if websocket_client and websocket_client.is_connected:
         if websocket_client.client_id == websocket_client.active_controller_id:
-            await websocket_client.send_audio_chunk(audio_bytes)
-        # else:
-            # logger.debug("Nicht aktiver Controller, überspringe das Senden von Audio-Input.")
-            # Dies ist jetzt eher ein Debug-Fall, da der InputHandler gestoppt werden sollte
-            # wenn wir nicht der aktive Controller sind.
-    # else:
-        # logger.debug("WebSocketClient nicht verbunden oder nicht verfügbar. Überspringe das Senden von Audio-Input.")
+            
+            # --- NOISE GATE LOGIK ---
+            # Wandle Bytes in Numpy-Array (16-bit Integer) um
+            audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+            
+            # Berechne die durchschnittliche Lautstärke (RMS) des Chunks
+            # Wir nutzen float32, damit die Quadrate (square) nicht überlaufen
+            rms_volume = np.sqrt(np.mean(np.square(audio_array.astype(np.float32))))
+            
+            # Wenn die Lautstärke unter dem Schwellenwert liegt, muten wir den Chunk
+            if rms_volume < NOISE_GATE_THRESHOLD:
+                audio_bytes = b'\x00' * len(audio_bytes) # Ersetze mit purer Stille
+            # ------------------------
 
+            await websocket_client.send_audio_chunk(audio_bytes)
 
 async def on_websocket_connect():
     """Wird aufgerufen, wenn der WebSocket erfolgreich verbunden ist."""
@@ -147,8 +174,11 @@ async def handle_backend_message(data: Union[AllIncomingJsonEvents, bytes]):
         elif message_type == "error":
             error_data: ErrorEvent = data
             logger.error(f"Backend Error: {error_data.get('message')}")
+        elif message_type == "tool_call":
+            tool_call_data: ToolCallEvent = data
+            logger.info(f"Tool Call Received: {tool_call_data.get('tool_name')} with args: {tool_call_data.get('args')} and suggested_action: {tool_call_data.get('suggested_action')}")
         else:
-            logger.info(f"Received unknown JSON message: {data}")
+            logger.warning(f"Received unknown JSON message: {data}")
     else:
         logger.warning(f"Received unexpected message format: {type(data)} - {data}")
 
@@ -179,7 +209,8 @@ async def main():
     audio_input_handler = AudioInputHandler(
         on_audio_data_callback=send_recorded_audio_to_websocket,
         target_channels=1,
-        device_name_keywords=["UM10", "USB Audio Device"],
+        # device_name_keywords=["UM10", "USB Audio Device"],
+        device_name_keywords=["ArrayUAC10", "ReSpeaker"],
         rates_to_test=[48000, 44100, 16000]
     )
     

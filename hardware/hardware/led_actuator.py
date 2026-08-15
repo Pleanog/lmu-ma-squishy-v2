@@ -1,26 +1,25 @@
-# hardware/led_actuator.py
-import RPi.GPIO as GPIO
+import logging
 import asyncio
+from .base_actuator import BaseActuator
 
-class LedActuator:
-    def __init__(self, pin: int):
-        self.pin = pin
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(self.pin, GPIO.OUT)
+logger = logging.getLogger(__name__)
+
+class LEDActuator(BaseActuator):
+    def __init__(self, name: str):
+        super().__init__(name)
         self.current_state = False
+        logger.info(f"🟢 [LED MOCK] Initialisiert für: {self.name}")
 
-    def set_state(self, state: bool):
-        """Sets the LED on (True) or off (False)."""
-        if state != self.current_state:
-            GPIO.output(self.pin, GPIO.HIGH if state else GPIO.LOW)
-            self.current_state = state
-            print(f"LED on pin {self.pin} set to {'ON' if state else 'OFF'}")
-
-    async def blink(self, count: int, delay: float):
-        """Makes the LED blink for a given count."""
-        for _ in range(count):
-            self.set_state(True)
-            await asyncio.sleep(delay)
-            self.set_state(False)
-            await asyncio.sleep(delay)
-        print(f"LED on pin {self.pin} finished blinking.")
+    async def execute(self, command: dict):
+        """Mockt die LED-Steuerung durch einfache Log-Ausgaben."""
+        color = command.get("color", "unknown")
+        duration = command.get("duration", 1) # Default to 1 second if not provided
+        
+        logger.info(f"💡 [LED MOCK] Schalte auf Farbe: {color} für {duration} Sekunden...")
+        self.current_state = True
+        
+        if duration > 0:
+            await asyncio.sleep(duration)
+            logger.info(f"💡 [LED MOCK] LED ({color}) wieder aus.")
+            
+        self.current_state = False

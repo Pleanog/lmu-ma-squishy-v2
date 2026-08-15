@@ -7,6 +7,7 @@ from uuid import uuid4
 from datetime import datetime
 import time # <-- NEU: Importiere time für Inaktivitäts-Monitor
 from functools import partial
+from functools import partial
 
 from google.genai import types
 from models.client_state import ClientCapability

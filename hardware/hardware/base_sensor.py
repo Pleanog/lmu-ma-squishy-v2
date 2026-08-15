@@ -1,5 +1,6 @@
 import logging
 from typing import Any
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -16,38 +17,43 @@ class BaseSensor:
         """Gibt einen Text-String zurück, falls sich der Status geändert hat. Sonst None."""
         current_state = self.read_state()
         
-        if current_state != self.last_state:
+        if current_state is not None and current_state != self.last_state:
             self.last_state = current_state
             return self.format_message(current_state)
         return None
 
     def format_message(self, state: Any) -> str:
-        """Formatiert den Status für Gemini."""
         return f"Sensor {self.name} meldet: {state}"
 
 
-# --- SIMULIERTE SENSOREN ---
+if __name__ == "__main__":
+    from touch_sensor import TouchSensor
+    from flex_sensor import FlexSensor
+    from gyro_sensor import OrientationSensor
 
-import random
+    logging.basicConfig(level=logging.INFO)
+    print("\n--- Starte Sensor-Test ---")
+    print("Drücke STRG+C um den Test zu beenden.\n")
 
-class TouchSensor(BaseSensor):
-    def read_state(self):
-        # SIMULATION: Zu 5% ändert sich der Zustand zufällig
-        if random.random() < 0.05:
-            return random.choice([True, False])
-        return self.last_state # Bleibt wie er ist
+    touch = TouchSensor("TouchSensor Test")
+    flex = FlexSensor("FlexSensor Test", gpio_pin=17)
+    orientation = OrientationSensor("GyroSensor Test")
 
-    def format_message(self, state):
-        if state:
-            return "Squishy wird gerade am Kopf gestreichelt."
-        return "Das Streicheln hat aufgehört."
+    try:
+        while True:
+            touch_update = touch.get_update_if_changed()
+            if touch_update:
+                print(f"📡 {touch_update}")
 
-class OrientationSensor(BaseSensor):
-    def read_state(self):
-        # SIMULATION
-        if random.random() < 0.02:
-            return random.choice(["aufrecht", "auf der Seite", "kopfüber"])
-        return self.last_state
+            flex_update = flex.get_update_if_changed()
+            if flex_update:
+                print(f"📡 {flex_update}")
 
-    def format_message(self, state):
-        return f"Squishys Position ist jetzt: {state}."
+            orientation_update = orientation.get_update_if_changed()
+            if orientation_update:
+                print(f"📡 {orientation_update}")
+
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        print("\nTest beendet. Tschüss!")
