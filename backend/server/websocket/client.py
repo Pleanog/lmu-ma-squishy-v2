@@ -42,15 +42,25 @@ class WebSocketClient:
         logger.info(f"{GREEN}Client {self.client_id}: WebSocket accepted.{RESET}")
         self._send_task = asyncio.create_task(self._send_loop())
 
-    def set_state(self, client_type: ClientType, capabilities: Set[ClientCapability]):
+    def set_state(
+        self,
+        client_type: ClientType,
+        capabilities: Set[ClientCapability],
+        username: Optional[str] = None,
+        participant_id: Optional[str] = None,
+    ):
         self.state = WebSocketClientState(
             client_id=self.client_id,
             client_type=client_type,
-            capabilities=capabilities
+            capabilities=capabilities,
+            username=username.strip() if isinstance(username, str) and username.strip() else None,
+            participant_id=participant_id.strip() if isinstance(participant_id, str) and participant_id.strip() else None,
         )
         logger.info(
             f"{GREY}Client {self.client_id}: State set to "
-            f"{self.state.client_type} with capabilities: {self.state.capabilities}{RESET}"
+            f"{self.state.client_type} with capabilities: {self.state.capabilities}"
+            f" and username: {self.state.username}"
+            f" and participant_id: {self.state.participant_id}{RESET}"
         )
 
     async def send_event(self, event: OutgoingEventType):

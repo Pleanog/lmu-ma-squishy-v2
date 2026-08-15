@@ -29,6 +29,8 @@ class WebSocketClientState(BaseModel):
     client_id: str
     client_type: ClientType
     capabilities: Set[ClientCapability]
+    username: str | None = None
+    participant_id: str | None = None
 
     class Config:
         use_enum_values = True

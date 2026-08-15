@@ -23,7 +23,7 @@ class GeminiLive:
     """
     Handles the interaction with the Gemini Live API.
     """
-    def __init__(self, api_key, model, input_sample_rate, tools=None, tool_mapping=None):
+    def __init__(self, api_key, model, input_sample_rate, tools=None, tool_mapping=None, system_prompt=None):
         """
         Initializes the GeminiLive client.
 
@@ -33,6 +33,7 @@ class GeminiLive:
             input_sample_rate (int): The sample rate for audio input.
             tools (list, optional): List of tools to enable. Defaults to None.
             tool_mapping (dict, optional): Mapping of tool names to functions. Defaults to None.
+            system_prompt (str, optional): The system instruction to send to Gemini.
         """
         self.api_key = api_key
         self.model = model
@@ -40,9 +41,21 @@ class GeminiLive:
         self.client = genai.Client(api_key=api_key)
         self.tools = tools or []
         self.tool_mapping = tool_mapping or {}
+        self.system_prompt = system_prompt or system_promt
         self._current_session_handle = None # Speichert den Handle für die Wiederaufnahme der Session
         self._client_message_index = 0 # Um den letzten gesendeten Nachrichtenindex zu verfolgen
         self._last_sent_client_message_index = 0 # Trackt den Index der zuletzt gesendeten Nachricht für die Wiederaufnahme
+        self._resumption_config_cls = getattr(types, "LiveSessionResumptionConfig", None)
+        self._supports_session_resumption = self._resumption_config_cls is not None
+        self._resumption_support_warning_logged = False
+
+    def set_system_prompt(self, system_prompt: str):
+        self.system_prompt = system_prompt
+
+    def clear_session_resumption_state(self):
+        self._current_session_handle = None
+        self._client_message_index = 0
+        self._last_sent_client_message_index = 0
 
     async def _connect_and_receive(self, audio_input_queue, video_input_queue, text_input_queue, audio_output_callback, audio_interrupt_callback):
         """Internal method to handle a single connection attempt and receive loop."""
@@ -55,7 +68,7 @@ class GeminiLive:
                     )
                 )
             ),
-            system_instruction=types.Content(parts=[types.Part(text=system_promt)]),
+            system_instruction=types.Content(parts=[types.Part(text=self.system_prompt)]),
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             realtime_input_config=types.RealtimeInputConfig(
@@ -64,12 +77,21 @@ class GeminiLive:
             tools=self.tools,
         )
                 
-        if self._current_session_handle:
-            config.session_resumption_config = types.LiveSessionResumptionConfig(
+        if self._current_session_handle and self._supports_session_resumption:
+            config.session_resumption_config = self._resumption_config_cls(
                 session_handle=self._current_session_handle,
-                last_consumed_client_message_index=self._client_message_index 
+                last_consumed_client_message_index=self._client_message_index
             )
             logger.info(f"Attempting to resume Gemini Live session with handle: {self._current_session_handle}, starting client_message_index from {self._client_message_index}")
+        elif self._current_session_handle and not self._supports_session_resumption:
+            if not self._resumption_support_warning_logged:
+                logger.warning(
+                    "Session resumption handle exists, but this google.genai.types version "
+                    "does not provide LiveSessionResumptionConfig. Falling back to fresh sessions."
+                )
+                self._resumption_support_warning_logged = True
+            self.clear_session_resumption_state()
+            logger.info(f"Connecting to Gemini Live with model={self.model} (resumption disabled by SDK capabilities)")
         else:
             logger.info(f"Connecting to Gemini Live with model={self.model}")
             self._last_sent_client_message_index = 0 # Reset for new session
@@ -129,14 +151,15 @@ class GeminiLive:
                                 await event_queue.put({"type": "go_away", "time_left": response.go_away.time_left})
                                 return # Exit receive loop
                             
-                            if response.session_resumption_update:
-                                self._current_session_handle = response.session_resumption_update.new_handle
-                                if response.session_resumption_update.last_consumed_client_message_index is not None:
-                                    self._client_message_index = response.session_resumption_update.last_consumed_client_message_index
+                            session_resumption_update = getattr(response, "session_resumption_update", None)
+                            if session_resumption_update:
+                                self._current_session_handle = session_resumption_update.new_handle
+                                if session_resumption_update.last_consumed_client_message_index is not None:
+                                    self._client_message_index = session_resumption_update.last_consumed_client_message_index
                                     self._last_sent_client_message_index = max(self._last_sent_client_message_index, self._client_message_index)
 
-                                logger.info(f"Session resumption update: new_handle='{self._current_session_handle}' resumable={response.session_resumption_update.resumable} last_consumed_client_message_index={self._client_message_index}")
-                                await event_queue.put({"type": "session_resumption_update", "handle": self._current_session_handle, "resumable": response.session_resumption_update.resumable, "last_consumed_client_message_index": self._client_message_index})                            
+                                logger.info(f"Session resumption update: new_handle='{self._current_session_handle}' resumable={session_resumption_update.resumable} last_consumed_client_message_index={self._client_message_index}")
+                                await event_queue.put({"type": "session_resumption_update", "handle": self._current_session_handle, "resumable": session_resumption_update.resumable, "last_consumed_client_message_index": self._client_message_index})
 
                             server_content = response.server_content
                             tool_call = response.tool_call
@@ -159,7 +182,7 @@ class GeminiLive:
                                     logger.debug( CYAN + f"{server_content.output_transcription.text}" + RESET  )
         
                                 if server_content.turn_complete:
-                                    last_consumed_index = response.session_resumption_update.last_consumed_client_message_index if response.session_resumption_update else None
+                                    last_consumed_index = session_resumption_update.last_consumed_client_message_index if session_resumption_update else None
                                     logger.info(f"Turn complete. last_consumed_client_message_index={last_consumed_index}")
                                     await event_queue.put({"type": "turn_complete"})
 

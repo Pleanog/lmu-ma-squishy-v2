@@ -82,7 +82,8 @@ const imageUrl = computed(() => props.getFileUrl(props.msg, 'image'));
   margin-left: auto; /* Push to the right */
 }
 .ai-msg {
-  text-align: left;
+  text-align: left !important;
+  background-color: red;
   align-self: flex-start;
   background-color: var(--p-content-background); /* PrimeVue background for AI messages */
   color: var(--p-text-color);
@@ -109,5 +110,6 @@ const imageUrl = computed(() => props.getFileUrl(props.msg, 'image'));
   gap: 0.3rem;
   justify-content: flex-end;
 }
+
 
 </style>

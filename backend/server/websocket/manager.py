@@ -12,7 +12,7 @@ from models.client_state import ClientType, ClientCapability
 from models.events import (
     IncomingEventType, RegisterEvent, RegistrationAckEvent,
     ActiveControllerChangeEvent, OutgoingEventType, ErrorEvent,
-    SetActiveControllerEvent, SystemMessageEvent
+    SetActiveControllerEvent, SystemMessageEvent, RoutingConfigUpdateEvent
 )
 
 logger = logging.getLogger(__name__)
@@ -25,8 +25,16 @@ class WebSocketManager:
     def __init__(self):
         self.active_clients: Dict[str, WebSocketClient] = {}
         self.active_controller_id: Optional[str] = None
+        self.gemini_session_manager: Optional[Any] = None
         self.event_queue: asyncio.Queue[tuple[str, IncomingEventType]] = asyncio.Queue() # Store (client_id, event) tuples
         self.message_router: Optional[Callable[[IncomingEventType, str], Coroutine[Any, Any, None]]] = None # Will be set by main.py
+        self.routing_config: Dict[str, bool] = {
+            "hardware_mic_enabled": True,
+            "hardware_speaker_enabled": True,
+            "ui_text_mode_enabled": True,
+        }
+        self.last_input_client_id: Optional[str] = None
+        self.last_input_modality: Optional[str] = None
         logger.info("WebSocketManager initialized.")
 
     async def connect(self, websocket: WebSocket) -> WebSocketClient:
@@ -61,7 +69,14 @@ class WebSocketManager:
             await client.send_event(ErrorEvent(message="Client already registered."))
             return
 
-        client.set_state(event.client_type, set(event.capabilities))
+        client.set_state(
+            event.client_type,
+            set(event.capabilities),
+            username=event.username,
+            participant_id=event.participant_id,
+        )
+        if event.username and event.username.strip() and self.gemini_session_manager:
+            self.gemini_session_manager.set_username(event.username.strip())
         logger.info(f"Client {client.client_id} ({client.state.client_type}) registered.")
 
         # If no active controller, or if this client can be active and requests it implicitly
@@ -75,10 +90,51 @@ class WebSocketManager:
             client_id=client.client_id,
             message=f"Successfully registered as {client.state.client_type}.",
             active_controller_id=self.active_controller_id,
-            current_active_controller_type=self.active_clients[self.active_controller_id].state.client_type if self.active_controller_id and self.active_clients.get(self.active_controller_id) else None
+            current_active_controller_type=self.active_clients[self.active_controller_id].state.client_type if self.active_controller_id and self.active_clients.get(self.active_controller_id) else None,
+            routing_config=self.get_routing_config(),
         )
         await client.send_event(ack_event)
         await self.broadcast(SystemMessageEvent(message=f"New {client.state.client_type} client ({client.client_id[:8]}) connected."), exclude_client_id=client.client_id)
+
+    def get_routing_config(self) -> Dict[str, bool]:
+        return dict(self.routing_config)
+
+    def update_routing_config(
+        self,
+        hardware_mic_enabled: Optional[bool] = None,
+        hardware_speaker_enabled: Optional[bool] = None,
+        ui_text_mode_enabled: Optional[bool] = None,
+    ) -> Dict[str, bool]:
+        if hardware_mic_enabled is not None:
+            self.routing_config["hardware_mic_enabled"] = bool(hardware_mic_enabled)
+        if hardware_speaker_enabled is not None:
+            self.routing_config["hardware_speaker_enabled"] = bool(hardware_speaker_enabled)
+        if ui_text_mode_enabled is not None:
+            self.routing_config["ui_text_mode_enabled"] = bool(ui_text_mode_enabled)
+        return self.get_routing_config()
+
+    def note_input_route(self, client_id: str, modality: str) -> None:
+        self.last_input_client_id = client_id
+        self.last_input_modality = modality
+
+    def resolve_audio_output_client(self) -> Optional[WebSocketClient]:
+        if self.last_input_modality and self.last_input_modality != "audio":
+            return None
+
+        if self.last_input_client_id:
+            source_client = self.active_clients.get(self.last_input_client_id)
+            if source_client and source_client.state and ClientCapability.AUDIO_OUTPUT in source_client.state.capabilities:
+                if source_client.state.client_type == ClientType.HARDWARE and not self.routing_config.get("hardware_speaker_enabled", True):
+                    return None
+                return source_client
+
+        active_client = self.get_active_controller()
+        if active_client and active_client.state and ClientCapability.AUDIO_OUTPUT in active_client.state.capabilities:
+            if active_client.state.client_type == ClientType.HARDWARE and not self.routing_config.get("hardware_speaker_enabled", True):
+                return None
+            return active_client
+
+        return None
 
 
     async def set_active_controller(self, client_id: str) -> bool:
@@ -225,6 +281,27 @@ class WebSocketManager:
                 logger.warning(f"Client {client_id} tried to set {event.client_id} as active controller.")
                 await client.send_event(ErrorEvent(message="You can only request to set yourself as the active controller."))
             return # Active controller change handled, do not pass to main router
+
+        if isinstance(event, RoutingConfigUpdateEvent):
+            if client.state.client_type != ClientType.FRONTEND:
+                await client.send_event(ErrorEvent(message="Only frontend clients may update routing configuration."))
+                return
+            updated = self.update_routing_config(
+                hardware_mic_enabled=event.hardware_mic_enabled,
+                hardware_speaker_enabled=event.hardware_speaker_enabled,
+                ui_text_mode_enabled=event.ui_text_mode_enabled,
+            )
+            await self.broadcast(
+                SystemMessageEvent(
+                    message=(
+                        "Routing updated: "
+                        f"Hardware Mic={'ON' if updated['hardware_mic_enabled'] else 'OFF'}, "
+                        f"Hardware Speaker={'ON' if updated['hardware_speaker_enabled'] else 'OFF'}, "
+                        f"UI Text Mode={'ON' if updated['ui_text_mode_enabled'] else 'OFF'}."
+                    )
+                )
+            )
+            return
 
         # All other events are put into the main event queue for Gemini and tool dispatching
         await self.event_queue.put((client_id, event))

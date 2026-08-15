@@ -12,6 +12,8 @@ interface RegisterEvent extends BaseEvent {
   type: "register";
   client_type: "frontend" | "hardware" | "monitor";
   capabilities: string[]; // ClientCapability enum values as strings
+  username?: string;
+  participant_id?: string;
 }
 
 interface RegistrationAckEvent extends BaseEvent {
@@ -20,6 +22,11 @@ interface RegistrationAckEvent extends BaseEvent {
   message: string;
   active_controller_id?: string;
   current_active_controller_type?: "frontend" | "hardware" | "monitor";
+  routing_config?: {
+    hardware_mic_enabled: boolean;
+    hardware_speaker_enabled: boolean;
+    ui_text_mode_enabled: boolean;
+  };
 }
 
 interface ActiveControllerChangeEvent extends BaseEvent {
@@ -72,6 +79,11 @@ interface SystemMessageEvent extends BaseEvent {
   message: string;
 }
 
+interface SessionResetEvent extends BaseEvent {
+  type: "session_reset";
+  message: string;
+}
+
 // All possible incoming JSON events from the backend
 type IncomingBackendJsonEvent =
   | RegistrationAckEvent
@@ -81,7 +93,8 @@ type IncomingBackendJsonEvent =
   | ToolCallEvent
   | AIResponseEvent
   | ErrorEvent
-  | SystemMessageEvent;
+  | SystemMessageEvent
+  | SessionResetEvent;
 
 
 // Client capabilities (matching backend enum `ClientCapability`)
@@ -105,6 +118,8 @@ interface GeminiClientConfig {
   onError: (event: Event) => void;
   clientType: "frontend" | "hardware" | "monitor";
   capabilities: string[];
+  username?: string;
+  participantId?: string;
 }
 
 export class GeminiClient {
@@ -130,6 +145,8 @@ export class GeminiClient {
       onError: (event) => console.error('WebSocket error:', event),
       clientType: "frontend", // Default to frontend
       capabilities: FRONTEND_CAPABILITIES, // Default capabilities
+      username: undefined,
+      participantId: undefined,
       ...config,
     };
   }
@@ -157,7 +174,7 @@ export class GeminiClient {
 
     this.ws = new WebSocket(this.config.wsUrl);
 
-    this.ws.onopen = (event) => {
+    this.ws.onopen = (_event) => {
       console.log("WebSocket connected. Sending registration...");
       this._isConnected.value = true;
       this.config.onOpen();
@@ -236,6 +253,8 @@ export class GeminiClient {
         timestamp: new Date().toISOString(),
         client_type: this.config.clientType,
         capabilities: this.config.capabilities,
+        username: this.config.username?.trim() || undefined,
+        participant_id: this.config.participantId?.trim() || undefined,
       };
       this.ws.send(JSON.stringify(registrationMessage));
     } else {
@@ -311,6 +330,39 @@ export class GeminiClient {
       this.ws.send(JSON.stringify(sensorEvent));
     } else {
       console.warn('WebSocket not connected, cannot send sensor event.');
+    }
+  }
+
+  sendGestureEvent(gestureName: string): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const gestureEvent = {
+        type: "sensor_event",
+        timestamp: new Date().toISOString(),
+        sensor_id: "gesture",
+        event: gestureName,
+      };
+      this.ws.send(JSON.stringify(gestureEvent));
+    } else {
+      console.warn('WebSocket not connected, cannot send gesture event.');
+    }
+  }
+
+  sendRoutingConfig(config: {
+    hardwareMicEnabled: boolean;
+    hardwareSpeakerEnabled: boolean;
+    uiTextModeEnabled: boolean;
+  }): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const routingConfigEvent = {
+        type: "routing_config_update",
+        timestamp: new Date().toISOString(),
+        hardware_mic_enabled: config.hardwareMicEnabled,
+        hardware_speaker_enabled: config.hardwareSpeakerEnabled,
+        ui_text_mode_enabled: config.uiTextModeEnabled,
+      };
+      this.ws.send(JSON.stringify(routingConfigEvent));
+    } else {
+      console.warn('WebSocket not connected, cannot send routing config.');
     }
   }
 

@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional, Tuple, Callable
 from uuid import uuid4
 from datetime import datetime
 import time # <-- NEU: Importiere time für Inaktivitäts-Monitor
+from functools import partial
 
 from google.genai import types
 from models.client_state import ClientCapability
@@ -14,12 +15,15 @@ from gemini_live import GeminiLive
 from config import settings
 from models.events import (
     ErrorEvent, TranscriptEvent, AudioOutputEvent, AudioInterruptEvent,
-    ToolCallEvent, AIResponseEvent, OutgoingEventType, SystemMessageEvent
+    ToolCallEvent, AIResponseEvent, OutgoingEventType, SystemMessageEvent,
+    SessionResetEvent
 )
 from websocket.manager import WebSocketManager
 from tools.dispatcher import ToolDispatcher
 
 from gemini.handlers import create_gemini_audio_output_handler, create_gemini_audio_interrupt_handler
+from interaction_logger import PocketBaseInteractionLogger
+from memory_store import PocketBaseMemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +44,19 @@ class GeminiSessionManager:
     Handles input queues (audio, text, video) and routes Gemini's output
     (transcripts, audio, tool calls, AI responses) to the WebSocketManager.
     """
-    def __init__(self, ws_manager: 'WebSocketManager', tool_dispatcher: 'ToolDispatcher'):
+    def __init__(
+        self,
+        ws_manager: 'WebSocketManager',
+        tool_dispatcher: 'ToolDispatcher',
+        username: str = "Gast",
+        memory_store: Optional[PocketBaseMemoryStore] = None,
+        interaction_logger: Optional[PocketBaseInteractionLogger] = None,
+    ):
         self.ws_manager = ws_manager
         self.tool_dispatcher = tool_dispatcher
+        self.username = username.strip() or "Gast"
+        self.memory_store = memory_store
+        self.interaction_logger = interaction_logger
 
         self.audio_input_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self.text_input_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -60,8 +74,30 @@ class GeminiSessionManager:
         # --------------------------------------------------------
 
         self._last_ai_response_id: Optional[str] = None
+        self._last_ai_response_text: Optional[str] = None
+        self._current_ai_response_buffer: str = ""
 
         logger.info("GeminiSessionManager initialized.")
+
+    @property
+    def is_session_active(self) -> bool:
+        """Prüft dynamisch, ob die Session gerade läuft."""
+        return bool(self._gemini_session_task and not self._gemini_session_task.done())
+
+    def build_system_prompt(self, username: Optional[str] = None) -> str:
+        current_username = (username or self.username or "Gast").strip() or "Gast"
+        self.username = current_username
+        return (
+            f"Du sprichst gerade mit {current_username}. "
+            "Antworte standardmäßig auf Deutsch, halte deine Antworten kurz und klar. "
+            "Du bist Teil eines Hardware-Prototyps und hilfst dabei, die Interaktion mit der KI zu testen."
+        )
+
+    def set_username(self, username: str):
+        sanitized_username = (username or "Gast").strip() or "Gast"
+        self.username = sanitized_username
+        if self._gemini_live_client:
+            self._gemini_live_client.set_system_prompt(self.build_system_prompt(sanitized_username))
 
     async def initialize_gemini_client(self):
         """Initializes the GeminiLive client with tools and callbacks."""
@@ -72,18 +108,20 @@ class GeminiSessionManager:
         tool_mapping: Dict[str, Callable[..., Any]] = {}
         for tool_schema in self.tool_dispatcher.get_all_tool_schemas():
             for func_declaration in tool_schema.function_declarations:
-                tool_mapping[func_declaration.name] = self._tool_call_wrapper
+                # tool_mapping[func_declaration.name] = self._tool_call_wrapper
+                tool_mapping[func_declaration.name] = partial(self._tool_call_wrapper, func_declaration.name)
 
         self._gemini_live_client = GeminiLive(
             api_key=settings.GEMINI_API_KEY,
             model=settings.MODEL,
             input_sample_rate=settings.AUDIO_SAMPLE_RATE,
             tools=self.tool_dispatcher.get_all_tool_schemas(),
-            tool_mapping=tool_mapping
+            tool_mapping=tool_mapping,
+            system_prompt=self.build_system_prompt()
         )
         logger.info("GeminiLive client initialized with tool mapping.")
 
-    async def _tool_call_wrapper(self, **kwargs: Any) -> types.FunctionResponse:
+    async def _tool_call_wrapper(self, bound_tool_name: str, **kwargs: Any) -> types.FunctionResponse:
         """
         A wrapper function that GeminiLive calls for tool calls.
         This puts the tool call on a queue for the ToolDispatcher to handle,
@@ -91,12 +129,48 @@ class GeminiSessionManager:
         The actual function response will be sent back to Gemini later
         when a client provides it.
         """
-        tool_name = asyncio.current_task().get_name() # GeminiLive sets task name to tool name
+        tool_name = bound_tool_name
         tool_call_id = str(uuid4()) # Generate a unique ID for this specific tool call
 
         logger.info( DARKCYAN + f"Gemini requested ToolCall: {tool_name} with args: {kwargs}" + RESET)
 
         self._last_activity_time = time.time()
+        participant_id, username = self._get_active_identity()
+        await self.log_interaction(
+            participant_id=participant_id,
+            username=username,
+            source_client_type="gemini",
+            interaction_type="tool_call",
+            content=tool_name,
+            metadata={"args": kwargs},
+        )
+
+        if tool_name == "save_memory":
+            try:
+                explicit_content = (kwargs.get("content") or "").strip()
+                if explicit_content:
+                    save_result = await self.save_explicit_memory(
+                        content=explicit_content,
+                        source="tool_save_memory",
+                        trigger_event="save_memory_tool",
+                    )
+                else:
+                    save_result = await self.save_latest_response_as_memory(
+                        source="tool_save_memory",
+                        trigger_event="save_memory_tool",
+                    )
+                return types.FunctionResponse(
+                    id=tool_call_id,
+                    name=tool_name,
+                    response=save_result,
+                )
+            except Exception as e:
+                logger.error(f"save_memory tool failed: {e}", exc_info=True)
+                return types.FunctionResponse(
+                    id=tool_call_id,
+                    name=tool_name,
+                    response={"status": "error", "message": f"Failed to save memory: {e}"},
+                )
 
         tool_call_event = ToolCallEvent(
             tool_call_id=tool_call_id,
@@ -115,6 +189,79 @@ class GeminiSessionManager:
             name=tool_name,
             response={"status": "dispatched", "message": "Tool call dispatched to clients, awaiting response."}
         )
+
+    def _get_active_identity(self) -> Tuple[Optional[str], str]:
+        active_controller = self.ws_manager.get_active_controller()
+        if not active_controller or not active_controller.state:
+            return None, self.username
+        participant_id = active_controller.state.participant_id
+        username = active_controller.state.username or self.username
+        return participant_id, username
+
+    async def log_interaction(
+        self,
+        participant_id: Optional[str],
+        username: str,
+        source_client_type: str,
+        interaction_type: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.interaction_logger:
+            return
+        resolved_participant = (participant_id or "").strip()
+        if not resolved_participant:
+            return
+        try:
+            await self.interaction_logger.log_interaction(
+                participant_id=resolved_participant,
+                username=username,
+                source_client_type=source_client_type,
+                interaction_type=interaction_type,
+                content=content,
+                metadata=metadata,
+            )
+        except Exception as e:
+            logger.error(f"Failed to persist interaction log: {e}", exc_info=True)
+
+    async def save_latest_response_as_memory(
+        self,
+        source: str,
+        trigger_event: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        content = (self._last_ai_response_text or "").strip()
+        if not content and self._current_ai_response_buffer.strip():
+            content = self._current_ai_response_buffer.strip()
+        if not content:
+            return {"status": "error", "message": "No AI response available to save yet."}
+        return await self.save_explicit_memory(content=content, source=source, trigger_event=trigger_event)
+
+    async def save_explicit_memory(
+        self,
+        content: str,
+        source: str,
+        trigger_event: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.memory_store:
+            return {"status": "error", "message": "Memory store is not configured in the backend."}
+
+        participant_id, username = self._get_active_identity()
+        if not participant_id:
+            return {"status": "error", "message": "No participant_id available. Please reconnect with a participant ID."}
+
+        record = await self.memory_store.save_memory(
+            participant_id=participant_id,
+            username=username,
+            content=content,
+            source=source,
+            trigger_event=trigger_event,
+        )
+        return {
+            "status": "saved",
+            "memory_id": record.get("id"),
+            "participant_id": participant_id,
+            "source": source,
+        }
 
     async def _process_tool_responses(self):
         """Continuously processes tool responses coming from clients."""
@@ -160,7 +307,7 @@ class GeminiSessionManager:
     # ----------------------------------------
 
 
-    async def start_session(self): # Diese Methode wird jetzt von außen aufgerufen, um die Session zu starten
+    async def start_session(self, announce: bool = True): # Diese Methode wird jetzt von außen aufgerufen, um die Session zu starten
         """Starts the Gemini Live session and all related tasks."""
         if self._gemini_session_task and not self._gemini_session_task.done(): # <-- Prüfe, ob Task läuft
             logger.warning("Gemini session is already running.")
@@ -186,7 +333,8 @@ class GeminiSessionManager:
         self._inactivity_monitor_task = asyncio.create_task(self._inactivity_monitor()) # <-- NEU: Inaktivitäts-Monitor starten
         self._last_activity_time = time.time() # <-- Reset Inaktivitäts-Zeit
         
-        await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini session started."))
+        if announce:
+            await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini session started."))
 
     async def _run_gemini_session(self, audio_output_cb: Callable, audio_interrupt_cb: Optional[Callable]):
         try:
@@ -214,6 +362,7 @@ class GeminiSessionManager:
                     # Text-Transkription aus Gemini's output
                     text = response_event_from_gemini_live.get("text")
                     if text:
+                        self._current_ai_response_buffer += text
                         ai_response_event = AIResponseEvent(
                             text=text,
                             timestamp=datetime.utcnow()
@@ -225,6 +374,22 @@ class GeminiSessionManager:
                     # Text-Transkription aus Gemini's input (des Nutzers)
                     text = response_event_from_gemini_live.get("text")
                     if text:
+                        participant_id, username = self._get_active_identity()
+                        source_client_type = "unknown"
+                        active_controller = self.ws_manager.get_active_controller()
+                        if active_controller and active_controller.state:
+                            source_client_type = getattr(
+                                active_controller.state.client_type,
+                                "value",
+                                str(active_controller.state.client_type),
+                            )
+                        await self.log_interaction(
+                            participant_id=participant_id,
+                            username=username,
+                            source_client_type=source_client_type,
+                            interaction_type="user_transcript",
+                            content=text,
+                        )
                         transcript_event = TranscriptEvent(
                             text=text,
                             is_final=True,
@@ -237,9 +402,23 @@ class GeminiSessionManager:
                     logger.debug(f"Received tool_call notification from gemini_live.py event_queue: {response_event_from_gemini_live}")
                 
                 elif response_type == "turn_complete":
+                    if self._current_ai_response_buffer.strip():
+                        self._last_ai_response_text = self._current_ai_response_buffer.strip()
+                        participant_id, username = self._get_active_identity()
+                        await self.log_interaction(
+                            participant_id=participant_id,
+                            username=username,
+                            source_client_type="gemini",
+                            interaction_type="ai_response",
+                            content=self._last_ai_response_text,
+                        )
+                    self._current_ai_response_buffer = ""
                     logger.debug("Gemini turn complete.")
                 
                 elif response_type == "interrupted":
+                    if self._current_ai_response_buffer.strip():
+                        self._last_ai_response_text = self._current_ai_response_buffer.strip()
+                    self._current_ai_response_buffer = ""
                     logger.debug("Gemini interrupted.")
                 
                 elif response_type == "error":
@@ -272,10 +451,12 @@ class GeminiSessionManager:
             # manages its own reconnection loop. We only stop our tasks if explicitly called.
 
 
-    async def stop_session(self):
+    async def stop_session(self, announce: bool = True, reset_gemini_client: bool = False):
         """Stops the Gemini Live session and associated tasks."""
         if not (self._gemini_session_task and not self._gemini_session_task.done()): # <-- Prüfe, ob Task läuft
             logger.info(ORANGE + "Gemini session is not running." + RESET)
+            if reset_gemini_client:
+                self._gemini_live_client = None
             return
 
         logger.info(GREEN + "Stopping Gemini session tasks gracefully." + RESET)
@@ -321,5 +502,19 @@ class GeminiSessionManager:
             await self.tool_response_queue.get()
             self.tool_response_queue.task_done()
 
+        if reset_gemini_client:
+            self._gemini_live_client = None
+
         logger.info(GREEN + "GeminiSessionManager stopped." + RESET)
-        await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini session has been stopped."))
+        if announce:
+            await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini session has been stopped."))
+
+    async def interrupt_session(self):
+        """Stops the current Gemini stream but keeps the resumable context."""
+        await self.stop_session(announce=False, reset_gemini_client=False)
+
+    async def reset_session(self):
+        """Drops the current Gemini context and starts a clean replacement session."""
+        await self.stop_session(announce=False, reset_gemini_client=True)
+        await self.start_session(announce=False)
+        await self.ws_manager.broadcast(SessionResetEvent(message="Started a new Gemini session with fresh context."))

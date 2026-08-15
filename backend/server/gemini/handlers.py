@@ -16,16 +16,12 @@ def create_gemini_audio_output_handler(ws_manager: WebSocketManager):
     und sie in ein AudioOutputEvent verpackt, um es an den WebSocketManager zu senden.
     """
     async def audio_output_handler(audio_chunk: bytes):
-        # ANPASSUNG HIER: Verwende get_active_controller() oder get_client_by_id()
-        active_client: Optional[WebSocketClient] = ws_manager.get_active_controller() 
-        # ws_manager.get_active_controller() sollte das WebSocketClient-Objekt zurückgeben
+        active_client: Optional[WebSocketClient] = ws_manager.resolve_audio_output_client()
 
         if active_client: 
             audio_event = AudioOutputEvent(data=audio_chunk, timestamp=datetime.utcnow())
-            # Sende das Event direkt an den Client, nicht an den Manager,
-            # da der Manager bereits den Client gefunden hat.
             await active_client.send_event(audio_event) 
-            logger.debug(f"Sent AudioOutputEvent ({len(audio_chunk)} bytes) to active controller {active_client.client_id}.")
+            logger.debug(f"Sent AudioOutputEvent ({len(audio_chunk)} bytes) to client {active_client.client_id}.")
         else:
             logger.debug("No active controller found to send audio to.")
     return audio_output_handler
@@ -35,8 +31,7 @@ def create_gemini_audio_interrupt_handler(ws_manager: WebSocketManager):
     Erstellt einen Callback, der ein AudioInterruptEvent an den WebSocketManager sendet.
     """
     async def audio_interrupt_handler():
-        # ANPASSUNG HIER: Verwende get_active_controller()
-        active_client: Optional[WebSocketClient] = ws_manager.get_active_controller()
+        active_client: Optional[WebSocketClient] = ws_manager.resolve_audio_output_client()
 
         if active_client:
             interrupt_event = AudioInterruptEvent(message="AI audio interrupted.", timestamp=datetime.utcnow())

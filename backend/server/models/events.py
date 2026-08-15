@@ -18,6 +18,8 @@ class RegisterEvent(BaseEvent):
     type: str = "register"
     client_type: ClientType
     capabilities: List[ClientCapability] = Field(default_factory=list)
+    username: Optional[str] = None
+    participant_id: Optional[str] = None
 
 class AudioChunkEvent(BaseEvent):
     type: str = "audio_chunk"
@@ -33,7 +35,7 @@ class TextMessageEvent(BaseEvent):
 class SensorEvent(BaseEvent):
     type: str = "sensor_event"
     sensor_id: str
-    value: Any
+    value: Optional[Any] = None
     unit: Optional[str] = None
     event: Optional[str] = None # e.g., "petted", "tilted"
     intensity: Optional[str] = None
@@ -52,6 +54,12 @@ class ImageChunkEvent(BaseEvent):
     type: str = "image_chunk"
     data: str # Base64 encoded image data
 
+class RoutingConfigUpdateEvent(BaseEvent):
+    type: str = "routing_config_update"
+    hardware_mic_enabled: Optional[bool] = None
+    hardware_speaker_enabled: Optional[bool] = None
+    ui_text_mode_enabled: Optional[bool] = None
+
 # Union of all possible incoming event types
 IncomingEventType = Union[
     RegisterEvent,
@@ -61,6 +69,7 @@ IncomingEventType = Union[
     ToolResponseEvent,
     SetActiveControllerEvent,
     ImageChunkEvent,
+    RoutingConfigUpdateEvent,
 ]
 
 # --- Outgoing Events (from Server to Clients) ---
@@ -71,6 +80,7 @@ class RegistrationAckEvent(BaseEvent):
     message: str = "Successfully registered."
     active_controller_id: Optional[str] = None
     current_active_controller_type: Optional[ClientType] = None
+    routing_config: Optional[Dict[str, bool]] = None
 
 class ActiveControllerChangeEvent(BaseEvent):
     type: str = "active_controller_change"
@@ -116,6 +126,10 @@ class SystemMessageEvent(BaseEvent):
     type: str = "system_message"
     message: str
 
+class SessionResetEvent(BaseEvent):
+    type: str = "session_reset"
+    message: str = "Gemini session reset."
+
 # Union of all possible outgoing event types
 OutgoingEventType = Union[
     RegistrationAckEvent,
@@ -127,6 +141,7 @@ OutgoingEventType = Union[
     AIResponseEvent,
     ErrorEvent,
     SystemMessageEvent,
+    SessionResetEvent,
 ]
 
 class IncomingEvent(str, Enum):
@@ -137,6 +152,7 @@ class IncomingEvent(str, Enum):
     TOOL_RESPONSE = "tool_response"
     SET_ACTIVE_CONTROLLER = "set_active_controller"
     IMAGE_CHUNK = "image_chunk"
+    ROUTING_CONFIG_UPDATE = "routing_config_update"
 
     @property
     def model(self):
@@ -148,6 +164,7 @@ class IncomingEvent(str, Enum):
             IncomingEvent.TOOL_RESPONSE: ToolResponseEvent,
             IncomingEvent.SET_ACTIVE_CONTROLLER: SetActiveControllerEvent,
             IncomingEvent.IMAGE_CHUNK: ImageChunkEvent,
+            IncomingEvent.ROUTING_CONFIG_UPDATE: RoutingConfigUpdateEvent,
         }[self]
 
 class OutgoingEvent(str, Enum):
@@ -160,6 +177,7 @@ class OutgoingEvent(str, Enum):
     AI_RESPONSE = "ai_response"
     ERROR = "error"
     SYSTEM_MESSAGE = "system_message"
+    SESSION_RESET = "session_reset"
 
     @property
     def model(self):
@@ -173,4 +191,5 @@ class OutgoingEvent(str, Enum):
             OutgoingEvent.AI_RESPONSE: AIResponseEvent,
             OutgoingEvent.ERROR: ErrorEvent,
             OutgoingEvent.SYSTEM_MESSAGE: SystemMessageEvent,
+            OutgoingEvent.SESSION_RESET: SessionResetEvent,
         }[self]

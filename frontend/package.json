@@ -10,7 +10,11 @@
   },
   "dependencies": {
     "@primevue/themes": "^4.5.4",
+    "highlight.js": "^11.12.0",
+    "katex": "^0.18.4",
     "lucide-vue-next": "^0.562.0",
+    "markdown-it": "^15.0.0",
+    "markdown-it-katex": "^2.0.3",
     "pocketbase": "^0.26.6",
     "primeflex": "^4.0.0",
     "primeicons": "^7.0.0",

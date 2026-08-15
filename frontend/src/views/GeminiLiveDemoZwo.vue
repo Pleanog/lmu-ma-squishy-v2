@@ -2,10 +2,103 @@
 
 <template>
   <div class="p-4 flex justify-content-center">
+    <div class="corner-actions">
+      <Button
+        icon="pi pi-bookmark"
+        rounded
+        text
+        severity="secondary"
+        aria-label="Open saved memories"
+        @click="openMemoriesDialog"
+      />
+      <Button
+        icon="pi pi-cog"
+        rounded
+        text
+        severity="secondary"
+        aria-label="Open username settings"
+        @click="usernameDialogVisible = true"
+      />
+    </div>
+
+    <Dialog v-model:visible="usernameDialogVisible" modal header="Username" :style="{ width: '28rem' }">
+      <div class="flex flex-column gap-3">
+        <label for="session-username" class="font-medium">Wie möchtest du genannt werden?</label>
+        <InputText id="session-username" v-model="username" placeholder="Dein Name" @keyup.enter="saveUsername" />
+
+        <div class="flex flex-column gap-2">
+          <label for="participant-id" class="font-medium">Teilnehmer-ID</label>
+          <InputText id="participant-id" v-model="participantId" placeholder="Teilnehmer-ID" />
+          <small class="text-color-secondary">Wird genutzt, um gespeicherte Erinnerungen robust einem Nutzer zuzuordnen.</small>
+        </div>
+
+        <div class="flex flex-column gap-2 mt-2">
+          <label class="font-medium">Nachrichten anzeigen</label>
+          <div class="flex align-items-center justify-content-between">
+            <span class="text-sm text-color-secondary">System-Infos</span>
+            <Checkbox v-model="messageVisibility.showSystemMessages" binary />
+          </div>
+          <div class="flex align-items-center justify-content-between">
+            <span class="text-sm text-color-secondary">Tool Calls</span>
+            <Checkbox v-model="messageVisibility.showToolCalls" binary />
+          </div>
+          <div class="flex align-items-center justify-content-between">
+            <span class="text-sm text-color-secondary">Hardware-/Sensor-Input</span>
+            <Checkbox v-model="messageVisibility.showHardwareInput" binary />
+          </div>
+        </div>
+
+        <div class="flex flex-column gap-2 mt-2">
+          <label class="font-medium">Routing-Steuerung</label>
+          <div class="flex align-items-center justify-content-between">
+            <span class="text-sm text-color-secondary">Hardware Mic (Input an KI)</span>
+            <Checkbox v-model="routingConfig.hardwareMicEnabled" binary />
+          </div>
+          <div class="flex align-items-center justify-content-between">
+            <span class="text-sm text-color-secondary">Hardware Speaker (Audio von KI)</span>
+            <Checkbox v-model="routingConfig.hardwareSpeakerEnabled" binary />
+          </div>
+          <div class="flex align-items-center justify-content-between">
+            <span class="text-sm text-color-secondary">UI Text Mode (Text Input in UI)</span>
+            <Checkbox v-model="routingConfig.uiTextModeEnabled" binary />
+          </div>
+          <small class="text-color-secondary">Die Hardware darf weiter streamen, aber der Server kann Eingabe/Ausgabe gezielt ignorieren.</small>
+        </div>
+      </div>
+      <template #footer>
+        <Button label="Abbrechen" severity="secondary" text @click="usernameDialogVisible = false" />
+        <Button label="Speichern" @click="saveUsername" />
+      </template>
+    </Dialog>
+
+    <Dialog v-model:visible="memoriesDialogVisible" modal header="Gespeicherte Erinnerungen" :style="{ width: '42rem' }">
+      <div class="memories-content">
+        <div class="memories-toolbar">
+          <Tag :value="`Teilnehmer: ${participantId}`" severity="secondary" />
+          <Button label="Neu laden" icon="pi pi-refresh" text size="small" :loading="memoriesLoading" @click="loadMemories" />
+        </div>
+        <div v-if="memoriesError" class="memories-error">{{ memoriesError }}</div>
+        <div v-else-if="memoriesLoading" class="memories-state">Lade Erinnerungen...</div>
+        <div v-else-if="savedMemories.length === 0" class="memories-state">Noch keine gespeicherten Erinnerungen vorhanden.</div>
+        <div v-else class="memories-list">
+          <div v-for="memory in savedMemories" :key="memory.id" class="memory-item">
+            <div class="memory-meta">
+              <Tag :value="memory.source || 'unknown'" severity="info" />
+              <small>{{ formatMemoryDate(memory.created) }}</small>
+            </div>
+            <div class="memory-text">{{ memory.content }}</div>
+          </div>
+        </div>
+      </div>
+    </Dialog>
+
     <Card class="gemini-live-card">
       <template #title>
         <div class="flex justify-content-between align-items-center">
-          <h1>Squishy 2.0</h1>
+          <div class="flex align-items-center gap-2">
+            <h1>Squishy 2.0</h1>
+            <Tag :value="displayUsername" severity="info" icon="pi pi-user" />
+          </div>
           <div class="flex align-items-center gap-2">
             <Tag :value="status" :severity="statusSeverity" />
             <Tag v-if="clientIdShort" :value="`ID: ${clientIdShort}`" severity="secondary" />
@@ -29,135 +122,87 @@
         </div>
       </template>
       <template #content>
-        <!-- Authentication Section -->
         <div v-if="!isConnected && !sessionEnded" class="p-4 bg-gray-100 border-round text-center">
           <p class="mb-3">Click below to connect to the unified Squishy backend.</p>
           <Button label="Connect" icon="pi pi-bolt" :loading="connectLoading" @click="handleConnect" />
         </div>
 
-        <!-- Session Ended Section -->
         <div v-if="sessionEnded" class="p-5 bg-gray-50 border-round text-center fadein animation-duration-500">
           <h2 class="mt-0 mb-3">Session Ended</h2>
           <Button label="Start New Session" icon="pi pi-refresh" @click="resetUI" />
         </div>
 
-        <!-- Application Section -->
-        <div v-if="isConnected && !sessionEnded" class="app-grid">
-          <div class="left-panel">
-            <div class="video-container bg-black-alpha-90 border-round mb-3">
-              <div v-if="showVideoPlaceholder" class="video-placeholder flex align-items-center justify-content-center text-white text-xl">
-                Start camera to send video
-              </div>
-              <video ref="videoPreview" autoplay playsinline muted class="w-full h-full object-fit-cover"></video>
-              <canvas ref="videoCanvas" style="display: none;"></canvas>
-            </div>
-
-            <div class="flex flex-wrap gap-3 mb-3">
-              <Button
-                :label="mediaHandler.isRecording.value ? 'Stop Mic' : 'Start Mic'"
-                :icon="mediaHandler.isRecording.value ? 'pi pi-microphone-slash' : 'pi pi-microphone'"
-                :severity="mediaHandler.isRecording.value ? 'danger' : undefined"
-                :disabled="!isActiveController && activeControllerId !== null"
-                @click="toggleMic"
-                v-tooltip.bottom="!isActiveController && activeControllerId !== null ? 'Only active controller can send mic input' : ''"
-              />
-              <Button
-                :label="mediaHandler.isCameraActive.value ? 'Stop Camera' : 'Start Camera'"
-                :icon="mediaHandler.isCameraActive.value ? 'pi pi-video-slash' : 'pi pi-video'"
-                :severity="mediaHandler.isCameraActive.value ? 'danger' : undefined"
-                @click="toggleCamera"
-              />
-              <Button
-                :label="mediaHandler.isScreenActive.value ? 'Stop Sharing' : 'Share Screen'"
-                :icon="mediaHandler.isScreenActive.value ? 'pi pi-desktop' : 'pi pi-share-alt'"
-                :severity="mediaHandler.isScreenActive.value ? 'danger' : undefined"
-                @click="toggleScreenShare"
-              />
-              <Button label="Disconnect" icon="pi pi-times" severity="danger" @click="handleDisconnect" />
-            </div>
-
-            <Divider align="center">
-              <span class="p-tag">Simulate Sensors</span>
-            </Divider>
-            <div class="flex flex-wrap gap-2 mb-3">
-                <Button
-                    label="Pet Gentle"
-                    icon="pi pi-hand"
-                    severity="success"
-                    size="small"
-                    @click="sendSimulatedSensor('touch_sensor_1', 'petted', 1, 'gentle')"
-                    aria-label="Simulate gentle petting"
-                />
-                <Button
-                    label="Pet Hard"
-                    icon="pi pi-hand"
-                    severity="warning"
-                    size="small"
-                    @click="sendSimulatedSensor('touch_sensor_1', 'petted', 3, 'hard')"
-                    aria-label="Simulate hard petting"
-                />
-                <Button
-                    label="Tilt Left"
-                    icon="pi pi-angle-left"
-                    severity="info"
-                    size="small"
-                    @click="sendSimulatedSensor('imu_sensor', 'tilted', 'left')"
-                    aria-label="Simulate tilt left"
-                />
-                <Button
-                    label="Button Press"
-                    icon="pi pi-plus"
-                    severity="secondary"
-                    size="small"
-                    @click="sendSimulatedSensor('button_sensor_a', 'pressed', 'single')"
-                    aria-label="Simulate button press"
-                />
-            </div>
-
+        <div v-if="isConnected && !sessionEnded" class="conversation-shell">
+          <div class="utility-actions">
+            <Button
+              :label="mediaHandler.isRecording.value ? 'Stop Mic' : 'Start Mic'"
+              :icon="mediaHandler.isRecording.value ? 'pi pi-microphone-slash' : 'pi pi-microphone'"
+              :severity="mediaHandler.isRecording.value ? 'danger' : undefined"
+              :disabled="!isActiveController && activeControllerId !== null"
+              @click="toggleMic"
+              v-tooltip.bottom="!isActiveController && activeControllerId !== null ? 'Only active controller can send mic input' : ''"
+            />
+            <Button label="Disconnect" icon="pi pi-times" severity="danger" @click="handleDisconnect" />
           </div>
 
-          <div class="right-panel flex flex-column">
-            <div class="chat-log p-3 bg-gray-50 border-round overflow-y-auto mb-3 flex-grow-1" ref="chatLogRef">
-              <div v-for="(msg, index) in chatMessages" :key="index">
-                <Message v-if="msg.type === 'system'" severity="secondary" :closable="false" class="w-full my-1">
-                  <div class="flex align-items-center">
-                      <i class="pi pi-info-circle mr-2"></i>
-                      <span class="text-sm text-color-secondary">{{ msg.text }}</span>
-                  </div>
-                </Message>
-                <Message v-else-if="msg.type === 'error'" severity="danger" :closable="false" class="w-full my-1">
-                  <div class="flex align-items-center">
-                      <i class="pi pi-exclamation-triangle mr-2"></i>
-                      <span>{{ msg.text }}</span>
-                  </div>
-                </Message>
-                <Message v-else-if="msg.type === 'function_call'" severity="info" :closable="false" class="w-full my-1">
-                  <div class="flex align-items-center">
-                      <i class="pi pi-code mr-2"></i>
-                      <span>{{ msg.text }}</span>
-                  </div>
-                </Message>
-                <div v-else :class="['message', msg.type, { 'fadein': true, 'animation-duration-300': true }]">
-                  {{ msg.text }}
-                </div>
+          <div class="sensor-actions">
+            <div class="gesture-grid">
+              <div v-for="gesture in gestureButtons" :key="gesture.code" class="gesture-card">
+                <Button
+                  class="gesture-button"
+                  :style="{ 
+                    backgroundColor: gesture.color, 
+                    borderColor: gesture.color,
+                    color: `color-mix(in srgb, ${gesture.color} 20%, #000000)`
+                  }"
+                  :icon="gesture.icon"
+                  @click="sendGesture(gesture)"
+                >
+                  <span class="gesture-button-content">
+                    <span class="gesture-button-title">{{ gesture.code }}</span>
+                    <span class="gesture-button-subtitle">{{ gesture.name }}</span>
+                  </span>
+                </Button>
+                <small class="gesture-caption">{{ gesture.backendEvent }}</small>
               </div>
             </div>
-            <div class="flex gap-2">
-              <InputText
-                v-model="textInput"
-                placeholder="Type a message..."
-                class="flex-grow"
-                @keyup.enter="sendText"
-                :disabled="!isActiveController && activeControllerId !== null"
-                v-tooltip.top="!isActiveController && activeControllerId !== null ? 'Only active controller can send text input' : ''"
-              />
-              <Button
-                label="Send"
-                icon="pi pi-send"
-                @click="sendText"
-                :disabled="!isActiveController && activeControllerId !== null"
-              />
+          </div>
+
+          <div v-if="false" class="legacy-video-panel hidden-legacy-controls">
+            <div v-if="showVideoPlaceholder" class="legacy-video-placeholder">
+              <span>No camera preview connected.</span>
             </div>
+            <video ref="videoPreview" class="legacy-video-stream" muted playsinline />
+            <canvas ref="videoCanvas" class="legacy-video-canvas" />
+            <Button label="Toggle Camera" icon="pi pi-video" size="small" @click="toggleCamera" />
+            <Button label="Toggle Screen" icon="pi pi-desktop" size="small" @click="toggleScreenShare" />
+          </div>
+
+          <div class="chat-log" ref="chatLogRef">
+            <div v-for="(msg, index) in chatMessages" :key="index" :class="['message-row', msg.type]">
+              <div v-if="msg.type === 'system' || msg.type === 'error' || msg.type === 'function_call' || msg.type === 'hardware'" class="message-system" :class="msg.type">
+                <span class="badge">{{ msg.type === 'system' ? 'System' : msg.type === 'error' ? 'Error' : msg.type === 'hardware' ? 'Hardware' : 'Tool' }}</span>
+                <div class="message-content" v-html="renderMarkdown(msg.text)"></div>
+              </div>
+              <div v-else class="message-bubble" :class="msg.type" v-html="renderMarkdown(msg.text)"></div>
+            </div>
+          </div>
+
+          <div class="composer">
+            <InputText
+              v-model="textInput"
+              placeholder="Type a message..."
+              class="flex-grow"
+              @keyup.enter="sendText"
+              :disabled="(!isActiveController && activeControllerId !== null) || !routingConfig.uiTextModeEnabled"
+              v-tooltip.top="!routingConfig.uiTextModeEnabled ? 'UI text mode is disabled.' : ((!isActiveController && activeControllerId !== null) ? 'Only active controller can send text input' : '')"
+            />
+            <Button
+              label="Send"
+              icon="pi pi-send"
+              @click="sendText"
+              :disabled="(!isActiveController && activeControllerId !== null) || !routingConfig.uiTextModeEnabled"
+            />
           </div>
         </div>
       </template>
@@ -166,20 +211,83 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue';
+import { ref, onUnmounted, computed, nextTick, watch } from 'vue';
 import Card from 'primevue/card';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
+import Checkbox from 'primevue/checkbox';
 import Tag from 'primevue/tag';
-import Message from 'primevue/message';
-import Divider from 'primevue/divider';
-import Tooltip from 'primevue/tooltip'; // Import Tooltip
-
-// Register Tooltip globally if not already done in main.ts
-// app.directive('tooltip', Tooltip);
+import Dialog from 'primevue/dialog';
+import MarkdownIt from 'markdown-it';
+import markdownItKatex from 'markdown-it-katex';
+import hljs from 'highlight.js/lib/core';
+import python from 'highlight.js/lib/languages/python';
+import javascript from 'highlight.js/lib/languages/javascript';
+import json from 'highlight.js/lib/languages/json';
+import bash from 'highlight.js/lib/languages/bash';
+import 'highlight.js/styles/github-dark.css';
+import 'katex/dist/katex.min.css';
 
 import { MediaHandler } from '../utils/media-handler';
 import { GeminiClient } from '../utils/gemini-client';
+
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('bash', bash);
+hljs.registerLanguage('sh', bash);
+
+const markdownRenderer = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: true,
+  typographer: true,
+  highlight: (code, lang) => {
+    const normalizedLang = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
+    try {
+      return hljs.highlight(code, { language: normalizedLang }).value;
+    } catch {
+      return hljs.highlightAuto(code).value;
+    }
+  }
+});
+markdownRenderer.use(markdownItKatex);
+
+function renderMarkdown(text: string): string {
+  return markdownRenderer.render(text || '');
+}
+
+function generateParticipantId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `participant-${Date.now()}`;
+}
+
+function ensureParticipantId(): string {
+  const trimmed = participantId.value.trim();
+  if (trimmed) {
+    participantId.value = trimmed;
+    return trimmed;
+  }
+  const generated = generateParticipantId();
+  participantId.value = generated;
+  localStorage.setItem(PARTICIPANT_ID_STORAGE_KEY, generated);
+  return generated;
+}
+
+function getApiBaseUrl(): string {
+  const ws = wsUrl.value.trim();
+  if (ws.startsWith('wss://')) return ws.replace('wss://', 'https://').replace(/\/ws$/, '');
+  if (ws.startsWith('ws://')) return ws.replace('ws://', 'http://').replace(/\/ws$/, '');
+  return 'http://127.0.0.1:8000';
+}
+
+function formatMemoryDate(rawDate: string): string {
+  const parsed = new Date(rawDate);
+  if (Number.isNaN(parsed.getTime())) return rawDate;
+  return parsed.toLocaleString();
+}
 
 // Reactive state
 const wsUrl = ref('ws://127.0.0.1:8000/ws');
@@ -188,14 +296,193 @@ const isConnected = ref(false);
 const connectLoading = ref(false);
 const sessionEnded = ref(false);
 const textInput = ref('');
+const PARTICIPANT_ID_STORAGE_KEY = 'squishy-participant-id';
+const username = ref<string>(localStorage.getItem('squishy-username') || 'Gast');
+const participantId = ref<string>(localStorage.getItem(PARTICIPANT_ID_STORAGE_KEY) || '');
+const usernameDialogVisible = ref(false);
+const memoriesDialogVisible = ref(false);
+const memoriesLoading = ref(false);
+const memoriesError = ref('');
+let geminiClient: GeminiClient | null = null;
 
 // Chat message interface updated for new types
 interface ChatMessage {
-  type: 'user' | 'gemini' | 'function_call' | 'system' | 'error';
+  type: 'user' | 'gemini' | 'function_call' | 'system' | 'hardware' | 'error';
   text: string;
 }
 
+interface SavedMemory {
+  id: string;
+  content: string;
+  source?: string;
+  created: string;
+}
+
+interface GestureButtonConfig {
+  code: string;
+  name: string;
+  backendEvent:
+    | 'firm_press_head'
+    | 'hush_gesture'
+    | 'place_on_table'
+    | 'multi_tap_head_open_hand'
+    | 'target_focus'
+    | 'horizontal_turn'
+    | 'vertical_shake'
+    | 'squeeze_sides';
+  icon: string;
+  severity: 'primary' | 'secondary' | 'success' | 'info' | 'warning' | 'danger' | 'contrast';
+  color: string;
+}
+
+const VISIBILITY_STORAGE_KEY = 'squishy-message-visibility';
+const ROUTING_STORAGE_KEY = 'squishy-routing-config';
+const defaultMessageVisibility = {
+  showSystemMessages: true,
+  showToolCalls: true,
+  showHardwareInput: true,
+};
+const defaultRoutingConfig = {
+  hardwareMicEnabled: true,
+  hardwareSpeakerEnabled: true,
+  uiTextModeEnabled: true,
+};
+
+const messageVisibility = ref({ ...defaultMessageVisibility });
+const routingConfig = ref({ ...defaultRoutingConfig });
+
+function loadMessageVisibility() {
+  try {
+    const raw = localStorage.getItem(VISIBILITY_STORAGE_KEY);
+    if (!raw) return { ...defaultMessageVisibility };
+    const parsed = JSON.parse(raw);
+    return {
+      ...defaultMessageVisibility,
+      ...parsed,
+    };
+  } catch {
+    return { ...defaultMessageVisibility };
+  }
+}
+
+function persistMessageVisibility() {
+  localStorage.setItem(VISIBILITY_STORAGE_KEY, JSON.stringify(messageVisibility.value));
+}
+
+function loadRoutingConfig() {
+  try {
+    const raw = localStorage.getItem(ROUTING_STORAGE_KEY);
+    if (!raw) return { ...defaultRoutingConfig };
+    const parsed = JSON.parse(raw);
+    return {
+      ...defaultRoutingConfig,
+      ...parsed,
+    };
+  } catch {
+    return { ...defaultRoutingConfig };
+  }
+}
+
+function persistRoutingConfig() {
+  localStorage.setItem(ROUTING_STORAGE_KEY, JSON.stringify(routingConfig.value));
+}
+
+watch(
+  messageVisibility,
+  () => {
+    persistMessageVisibility();
+  },
+  { deep: true }
+);
+
+watch(
+  routingConfig,
+  () => {
+    persistRoutingConfig();
+    if (geminiClient && geminiClient.isConnected()) {
+      geminiClient.sendRoutingConfig({
+        hardwareMicEnabled: routingConfig.value.hardwareMicEnabled,
+        hardwareSpeakerEnabled: routingConfig.value.hardwareSpeakerEnabled,
+        uiTextModeEnabled: routingConfig.value.uiTextModeEnabled,
+      });
+    }
+  },
+  { deep: true }
+);
+
+messageVisibility.value = loadMessageVisibility();
+routingConfig.value = loadRoutingConfig();
+ensureParticipantId();
+
 const chatMessages = ref<ChatMessage[]>([]);
+const savedMemories = ref<SavedMemory[]>([]);
+
+const gestureButtons: GestureButtonConfig[] = [
+  {
+    code: 'R1_Activate',
+    name: 'Activate',
+    backendEvent: 'firm_press_head',
+    icon: 'pi pi-power-off',
+    severity: 'success',
+    color: '#FFB3B3',
+  },
+  {
+    code: 'R2_Stop',
+    name: 'Stop',
+    backendEvent: 'hush_gesture',
+    icon: 'pi pi-stop-circle',
+    severity: 'danger',
+    color: '#FFDBB3',
+  },
+  {
+    code: 'R3_Concise',
+    name: 'Concise',
+    backendEvent: 'place_on_table',
+    icon: 'pi pi-align-center',
+    severity: 'info',
+    color: '#FFFBB3',
+  },
+  {
+    code: 'R4_Elaborate',
+    name: 'Elaborate',
+    backendEvent: 'multi_tap_head_open_hand',
+    icon: 'pi pi-file-edit',
+    severity: 'primary',
+    color: '#E3FFB3',
+  },
+  {
+    code: 'R5_Save',
+    name: 'Save',
+    backendEvent: 'target_focus',
+    icon: 'pi pi-bookmark',
+    severity: 'warning',
+    color: '#B3FFB3',
+  },
+  {
+    code: 'R6_NewSession',
+    name: 'New Session',
+    backendEvent: 'horizontal_turn',
+    icon: 'pi pi-refresh',
+    severity: 'contrast',
+    color: '#B3FFFB',
+  },
+  {
+    code: 'R7_Options',
+    name: 'Options',
+    backendEvent: 'vertical_shake',
+    icon: 'pi pi-directions-alt',
+    severity: 'secondary',
+    color: '#B3DBFF',
+  },
+  {
+    code: 'R8_Optimize',
+    name: 'Optimize',
+    backendEvent: 'squeeze_sides',
+    icon: 'pi pi-sliders-h',
+    severity: 'info',
+    color: '#B3B3FF',
+  },
+];
 
 // Template refs
 const videoPreview = ref<HTMLVideoElement | null>(null);
@@ -204,7 +491,6 @@ const chatLogRef = ref<HTMLElement | null>(null);
 
 // Utility instances
 const mediaHandler = new MediaHandler();
-let geminiClient: GeminiClient | null = null;
 
 // Computed properties for UI
 const statusSeverity = computed(() => {
@@ -216,6 +502,10 @@ const statusSeverity = computed(() => {
 
 const showVideoPlaceholder = computed(() => {
   return !mediaHandler.videoStream.value;
+});
+
+const displayUsername = computed(() => {
+  return username.value.trim() || 'Gast';
 });
 
 const clientIdShort = computed(() => {
@@ -238,14 +528,25 @@ const isActiveController = computed(() => {
 let currentGeminiMessageIndex: number | null = null;
 let currentUserMessageIndex: number | null = null; // Backend might send user transcripts back
 
+function shouldDisplayMessage(type: ChatMessage['type']): boolean {
+  if (type === 'function_call') return messageVisibility.value.showToolCalls;
+  if (type === 'hardware') return messageVisibility.value.showHardwareInput;
+  if (type === 'system') return messageVisibility.value.showSystemMessages;
+  return true;
+}
+
 function appendMessage(type: ChatMessage['type'], text: string): number {
+  if (!shouldDisplayMessage(type)) {
+    return -1;
+  }
+
   chatMessages.value.push({ type, text });
   scrollToChatBottom();
   return chatMessages.value.length - 1;
 }
 
 function updateMessage(index: number, newText: string): void {
-  if (chatMessages.value[index]) {
+  if (index >= 0 && chatMessages.value[index]) {
     chatMessages.value[index].text += newText;
     scrollToChatBottom();
   }
@@ -266,49 +567,96 @@ function handleJsonMessage(msg: any): void {
     currentUserMessageIndex = null;
     appendMessage("system", msg.message);
   } else if (msg.type === "transcript") {
-    // Transcripts can be for user or AI, based on context.
-    // The backend only sends `transcript` from what it receives (user input).
-    // So, we treat this as the user's recognized speech.
+    currentGeminiMessageIndex = null;
+
     if (msg.is_final) {
         if (currentUserMessageIndex !== null) {
-            updateMessage(currentUserMessageIndex, msg.text); // Finalize the current user message
+            updateMessage(currentUserMessageIndex, msg.text);
         } else {
-            appendMessage("user", msg.text); // Or add a new one if it's a direct transcript
+            appendMessage("user", msg.text);
         }
-        currentUserMessageIndex = null; // Reset for next user input
+        currentUserMessageIndex = null;
     } else {
         if (currentUserMessageIndex !== null) {
             updateMessage(currentUserMessageIndex, msg.text);
         } else {
-            currentUserMessageIndex = appendMessage("user", msg.text); // Interim transcript
+            currentUserMessageIndex = appendMessage("user", msg.text);
         }
     }
-  } else if (msg.type === "ai_response") { // Gemini's actual text response
+  } else if (msg.type === "ai_response") {
     if (currentGeminiMessageIndex !== null) {
       updateMessage(currentGeminiMessageIndex, msg.text);
     } else {
       currentGeminiMessageIndex = appendMessage("gemini", msg.text);
     }
   } else if (msg.type === "tool_call") {
-    // This is the direct tool_call event from the backend
     const toolName = msg.tool_name;
     const args = JSON.stringify(msg.args);
     const suggestedAction = msg.suggested_action;
-    let toolText = `Tool Call: ${toolName}(${args}) [${suggestedAction}]`;
+    const toolText = `Tool Call: ${toolName}(${args}) [${suggestedAction}]`;
     appendMessage("function_call", toolText);
-    console.log("Received tool_call message:", msg);
-    // You could add logic here to visually simulate the tool call in the UI
-    // e.g., if (toolName === 'set_led_color') { updateLedVisual(args.color); }
     currentGeminiMessageIndex = null;
     currentUserMessageIndex = null;
   } else if (msg.type === "active_controller_change") {
     appendMessage("system", `Active controller changed to ${msg.new_active_controller_type} (ID: ${msg.new_active_controller_id.substring(0, 8)}).`);
-    geminiClient?.sendText(`Stell dich selbst kurz vor und begrüße den Nutzer`);  
-} else if (msg.type === "system_message") {
+  } else if (msg.type === "registration_ack" && msg.routing_config) {
+    routingConfig.value = {
+      hardwareMicEnabled: msg.routing_config.hardware_mic_enabled !== false,
+      hardwareSpeakerEnabled: msg.routing_config.hardware_speaker_enabled !== false,
+      uiTextModeEnabled: msg.routing_config.ui_text_mode_enabled !== false,
+    };
+  } else if (msg.type === "session_reset") {
+    mediaHandler.stopAudioPlayback();
+    currentGeminiMessageIndex = null;
+    currentUserMessageIndex = null;
+    chatMessages.value = [];
+  } else if (msg.type === "system_message") {
     appendMessage("system", msg.message);
   } else if (msg.type === "error") {
     appendMessage("error", msg.message);
   }
+}
+function saveUsername(): void {
+  const trimmed = username.value.trim();
+  const participant = ensureParticipantId();
+  username.value = trimmed || 'Gast';
+  localStorage.setItem('squishy-username', username.value);
+  localStorage.setItem(PARTICIPANT_ID_STORAGE_KEY, participant);
+  persistMessageVisibility();
+  persistRoutingConfig();
+  if (geminiClient && geminiClient.isConnected()) {
+    geminiClient.sendRoutingConfig({
+      hardwareMicEnabled: routingConfig.value.hardwareMicEnabled,
+      hardwareSpeakerEnabled: routingConfig.value.hardwareSpeakerEnabled,
+      uiTextModeEnabled: routingConfig.value.uiTextModeEnabled,
+    });
+  }
+  usernameDialogVisible.value = false;
+}
+
+async function loadMemories(): Promise<void> {
+  memoriesLoading.value = true;
+  memoriesError.value = '';
+  try {
+    const participant = ensureParticipantId();
+    const url = `${getApiBaseUrl()}/api/memories?participant_id=${encodeURIComponent(participant)}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || `HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    savedMemories.value = Array.isArray(payload.items) ? payload.items : [];
+  } catch (error: any) {
+    memoriesError.value = `Konnte Erinnerungen nicht laden: ${error.message ?? String(error)}`;
+  } finally {
+    memoriesLoading.value = false;
+  }
+}
+
+async function openMemoriesDialog(): Promise<void> {
+  memoriesDialogVisible.value = true;
+  await loadMemories();
 }
 
 // WebSocket Callbacks for GeminiClient
@@ -324,6 +672,13 @@ const geminiClientCallbacks = {
         // wird aktuell nicht aufgerufen
     } else if (geminiClient && !isActiveController.value) {
       appendMessage("system", "Connected as observer. Waiting for active controller to initialize AI persona.");
+    }
+    if (geminiClient) {
+      geminiClient.sendRoutingConfig({
+        hardwareMicEnabled: routingConfig.value.hardwareMicEnabled,
+        hardwareSpeakerEnabled: routingConfig.value.hardwareSpeakerEnabled,
+        uiTextModeEnabled: routingConfig.value.uiTextModeEnabled,
+      });
     }
   },
   // *** REPARIERTER onMessage CALLBACK ***
@@ -354,19 +709,35 @@ const geminiClientCallbacks = {
 
 // UI Control Handlers
 async function handleConnect(): Promise<void> {
-  connectLoading.value = true;
-  status.value = "Connecting...";
+const trimmedUsername = username.value.trim();
+if (!trimmedUsername) {
+  usernameDialogVisible.value = true;
+  status.value = 'Username required';
+  return;
+}
 
-  try {
-    await mediaHandler.initializeAudio();
+username.value = trimmedUsername;
+localStorage.setItem('squishy-username', trimmedUsername);
+const participant = ensureParticipantId();
+localStorage.setItem(PARTICIPANT_ID_STORAGE_KEY, participant);
+connectLoading.value = true;
+status.value = "Connecting...";
 
-    geminiClient = new GeminiClient({ wsUrl: wsUrl.value, ...geminiClientCallbacks });
-    geminiClient.connect();
-  } catch (error: any) {
-    console.error("Connection error:", error);
-    status.value = "Connection Failed: " + error.message;
-    connectLoading.value = false;
-  }
+try {
+  await mediaHandler.initializeAudio();
+
+  geminiClient = new GeminiClient({
+    wsUrl: wsUrl.value,
+    username: trimmedUsername,
+    participantId: participant,
+    ...geminiClientCallbacks,
+  });
+  geminiClient.connect();
+} catch (error: any) {
+  console.error("Connection error:", error);
+  status.value = "Connection Failed: " + error.message;
+  connectLoading.value = false;
+}
 }
 
 function handleDisconnect(): void {
@@ -474,22 +845,29 @@ function sendText(): void {
   const text = textInput.value;
   if (!isActiveController.value && activeControllerId.value !== null) {
       alert("You are not the active controller. Cannot send text input.");
-      textInput.value = ""; // Clear input
+      textInput.value = "";
       return;
   }
   if (text && geminiClient && geminiClient.isConnected()) {
+    if (!routingConfig.value.uiTextModeEnabled) {
+      appendMessage("system", "UI text mode is disabled. Text input was not sent.");
+      textInput.value = "";
+      return;
+    }
+    currentGeminiMessageIndex = null;
+    currentUserMessageIndex = null;
     geminiClient.sendText(text);
-    appendMessage("user", text); // Only append if actually sent
+    appendMessage("user", text);
     textInput.value = "";
   }
 }
 
-function sendSimulatedSensor(sensorId: string, eventType: string, value: any, intensity?: string): void {
+function sendGesture(gesture: GestureButtonConfig): void {
   if (geminiClient && geminiClient.isConnected()) {
-      geminiClient.sendSensorEvent(sensorId, eventType, value, intensity);
-      appendMessage("system", `Simulated sensor event: ${sensorId} - ${eventType} (Value: ${value})`);
+    geminiClient.sendGestureEvent(gesture.backendEvent);
+    appendMessage('hardware', `Simulated gesture: ${gesture.code} -> ${gesture.backendEvent}`);
   } else {
-      alert("Not connected to send sensor events.");
+    alert('Not connected to send gesture events.');
   }
 }
 
@@ -541,83 +919,330 @@ onUnmounted(() => {
 
 <style scoped>
 /* PrimeVue specific overrides and component styling */
+.corner-actions {
+position: absolute;
+top: 1rem;
+right: 1rem;
+z-index: 10;
+display: flex;
+gap: 0.35rem;
+}
+
 .gemini-live-card {
-  max-width: 1200px;
-  width: 100%;
+max-width: 1200px;
+width: 100%;
 }
 
 .p-card .p-card-content {
   padding-top: 0;
 }
 
-.video-container {
-  aspect-ratio: 16/9;
-  position: relative;
-  background-color: var(--surface-900); /* PrimeVue dark surface */
+.conversation-shell {
+display: flex;
+flex-direction: column;
+gap: 1rem;
 }
 
-.video-placeholder {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 1;
+.utility-actions,
+.sensor-actions,
+.composer {
+display: flex;
+flex-wrap: wrap;
+gap: 0.75rem;
+align-items: center;
 }
 
-video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+.sensor-actions {
+padding: 0.5rem 0.75rem;
+border: 1px solid var(--surface-200);
+border-radius: 0.75rem;
+background: rgba(148, 163, 184, 0.04);
+}
+
+.gesture-grid {
+display: grid;
+grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+gap: 0.75rem;
+width: 100%;
+}
+
+.gesture-card {
+display: flex;
+flex-direction: column;
+gap: 0.35rem;
+}
+
+.gesture-button {
+width: 100%;
+justify-content: flex-start;
+text-align: left;
+}
+
+.gesture-button-content {
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+gap: 0.1rem;
+}
+
+.gesture-button-title {
+font-weight: 700;
+}
+
+.gesture-button-subtitle {
+font-size: 0.82rem;
+opacity: 0.92;
+}
+
+.gesture-caption {
+color: var(--text-color-secondary);
+padding-inline: 0.2rem;
+word-break: break-word;
+}
+
+.memories-content {
+display: flex;
+flex-direction: column;
+gap: 0.75rem;
+}
+
+.memories-toolbar {
+display: flex;
+align-items: center;
+justify-content: space-between;
+gap: 0.75rem;
+}
+
+.memories-state,
+.memories-error {
+padding: 0.6rem 0.2rem;
+color: var(--text-color-secondary);
+}
+
+.memories-error {
+color: #b91c1c;
+}
+
+.memories-list {
+max-height: 55vh;
+overflow-y: auto;
+display: flex;
+flex-direction: column;
+gap: 0.65rem;
+padding-right: 0.2rem;
+}
+
+.memory-item {
+border: 1px solid var(--surface-200);
+border-radius: 0.75rem;
+padding: 0.65rem 0.8rem;
+background: rgba(148, 163, 184, 0.06);
+}
+
+.memory-meta {
+display: flex;
+align-items: center;
+justify-content: space-between;
+gap: 0.75rem;
+margin-bottom: 0.35rem;
+}
+
+.memory-text {
+white-space: pre-wrap;
+line-height: 1.5;
 }
 
 .chat-log {
-  min-height: 200px; /* Adjust as needed */
-  max-height: 70vh; /* Limit height and allow scrolling */
-  border: 1px solid var(--surface-200);
+min-height: 360px;
+max-height: 70vh;
+border: 1px solid var(--surface-200);
+border-radius: 1rem;
+background: linear-gradient(180deg, rgba(15, 23, 42, 0.02), rgba(15, 23, 42, 0.05));
+padding: 1rem;
+overflow-y: auto;
+display: flex;
+flex-direction: column;
+gap: 0.9rem;
 }
 
-.message {
-  padding: 0.5rem 1rem;
-  border-radius: var(--border-radius-xl); /* Use PrimeVue variable for rounded corners */
-  max-width: 80%;
-  word-wrap: break-word;
-  margin-bottom: 0.5rem;
-  animation: fadeIn 0.3s ease-in-out;
+.message-row {
+display: flex;
+width: 100%;
 }
 
-.message.user {
-  margin-left: auto; /* Align to right */
-  background-color: var(--primary-color); /* PrimeVue primary color */
-  color: var(--primary-color-text);
-  border-bottom-right-radius: var(--border-radius-sm); /* Slightly sharper corner */
+.message-row.user {
+justify-content: flex-end;
 }
 
-.message.gemini {
-  margin-right: auto; /* Align to left */
-  background-color: var(--surface-100); /* PrimeVue light surface */
-  color: var(--text-color);
-  border-bottom-left-radius: var(--border-radius-sm); /* Slightly sharper corner */
+.message-row.gemini {
+justify-content: flex-start;
 }
 
-.app-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2rem;
-  align-items: start;
+.message-row.system,
+.message-row.error,
+.message-row.function_call,
+.message-row.hardware {
+justify-content: center;
 }
 
-@media (max-width: 991px) { /* PrimeVue breakpoint for medium devices */
-  .app-grid {
-    grid-template-columns: 1fr;
-  }
+.message-bubble,
+.message-system {
+max-width: min(78%, 820px);
+border-radius: 1.1rem;
+padding: 0.8rem 1rem;
+line-height: 1.6;
+word-break: break-word;
+box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+}
+
+.message-row.user .message-bubble {
+background: linear-gradient(135deg, #2563eb, #1d4ed8);
+color: white;
+border-bottom-right-radius: 0.45rem;
+}
+
+.message-row.gemini .message-bubble {
+text-align: left !important;
+background: rgba(255, 255, 255, 0.9);
+border: 1px solid rgba(148, 163, 184, 0.25);
+color: var(--text-color);
+border-bottom-left-radius: 0.45rem;
+}
+
+.message-system {
+width: min(75%, 620px);
+border-radius: 0.85rem;
+background: rgba(148, 163, 184, 0.08);
+border: 1px solid rgba(148, 163, 184, 0.2);
+color: var(--text-color);
+font-size: 0.78rem;
+}
+
+.message-system.error {
+background: rgba(239, 68, 68, 0.08);
+border-color: rgba(239, 68, 68, 0.2);
+}
+
+.message-system.function_call {
+background: rgba(59, 130, 246, 0.08);
+border-color: rgba(59, 130, 246, 0.2);
+}
+
+.message-system.hardware {
+background: rgba(168, 85, 247, 0.06);
+border-color: rgba(168, 85, 247, 0.2);
+}
+
+.badge {
+display: inline-flex;
+align-items: center;
+border-radius: 999px;
+padding: 0.15rem 0.5rem;
+font-size: 0.62rem;
+font-weight: 600;
+letter-spacing: 0.04em;
+text-transform: uppercase;
+background: rgba(15, 23, 42, 0.06);
+color: var(--text-color-secondary);
+margin-bottom: 0.45rem;
+}
+
+.message-content {
+display: block;
+}
+
+.message-bubble :deep(p),
+.message-content :deep(p) {
+margin: 0 0 0.5rem;
+}
+
+.message-bubble :deep(p:last-child),
+.message-content :deep(p:last-child) {
+margin-bottom: 0;
+}
+
+.message-bubble :deep(pre),
+.message-content :deep(pre) {
+margin: 0.7rem 0;
+border-radius: 0.8rem;
+overflow-x: auto;
+padding: 0.9rem 1rem;
+background: #0f172a;
+color: #e2e8f0;
+border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.message-bubble :deep(code),
+.message-content :deep(code) {
+font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+font-size: 0.9em;
+}
+
+.message-bubble :deep(pre code),
+.message-content :deep(pre code) {
+padding: 0;
+background: transparent;
+border: none;
+}
+
+.message-bubble :deep(blockquote),
+.message-content :deep(blockquote) {
+border-left: 3px solid rgba(148, 163, 184, 0.5);
+padding-left: 0.8rem;
+margin: 0.75rem 0;
+color: var(--text-color-secondary);
+}
+
+.message-bubble :deep(ul),
+.message-bubble :deep(ol),
+.message-content :deep(ul),
+.message-content :deep(ol) {
+margin: 0.5rem 0 0.5rem 1.25rem;
+padding-left: 0.2rem;
+}
+
+.message-bubble :deep(table),
+.message-content :deep(table) {
+width: 100%;
+border-collapse: collapse;
+margin: 0.75rem 0;
+}
+
+.message-bubble :deep(th),
+.message-bubble :deep(td),
+.message-content :deep(th),
+.message-content :deep(td) {
+border: 1px solid rgba(148, 163, 184, 0.28);
+padding: 0.4rem 0.6rem;
+}
+
+.message-bubble :deep(a),
+.message-content :deep(a) {
+color: inherit;
+text-decoration: underline;
+}
+
+.message-bubble :deep(.katex),
+.message-content :deep(.katex) {
+font-size: 1.02em;
+}
+
+.composer {
+border: 1px solid var(--surface-200);
+border-radius: 1rem;
+padding: 0.75rem;
+background: rgba(255, 255, 255, 0.5);
+}
+
+.composer .p-inputtext {
+flex: 1;
 }
 
 /* Base styles from your CSS, adapted for PrimeVue where possible */
 :root {
-  --primary-color: var(--primevue-primary-color, #1a73e8); /* Fallback to original if not set */
-  --primary-hover: #1557b0; /* Keep original hover */
-  --danger-color: #ea4335;
+--primary-color: var(--primevue-primary-color, #1a73e8); /* Fallback to original if not set */
+--primary-hover: #1557b0; /* Keep original hover */
+--danger-color: #ea4335;
   --bg-color: var(--surface-0); /* PrimeVue surface background */
   --surface-color: var(--surface-ground); /* PrimeVue ground surface */
   --text-primary: var(--text-color);

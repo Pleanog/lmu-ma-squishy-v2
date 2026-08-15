@@ -5,10 +5,12 @@ import logging
 import colorlog
 import httpx # For PocketBase API interactions
 import json
+from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from pydantic import BaseModel
 
 from config import settings
 from websocket.manager import WebSocketManager
@@ -17,6 +19,8 @@ from gemini.session import GeminiSessionManager
 from tools.dispatcher import ToolDispatcher
 from tools.squishy_tools import squishy_tools # The actual tool definitions
 from models.events import ErrorEvent, SystemMessageEvent
+from interaction_logger import PocketBaseInteractionLogger
+from memory_store import PocketBaseMemoryStore
 
 # --- Logging Setup ---
 console_handler = colorlog.StreamHandler()
@@ -67,6 +71,8 @@ ws_manager: WebSocketManager
 tool_dispatcher: ToolDispatcher
 gemini_session_manager: GeminiSessionManager
 message_router: MessageRouter
+memory_store: PocketBaseMemoryStore
+interaction_logger: PocketBaseInteractionLogger
 
 async def get_pb_admin_token():
     """Authenticates with PocketBase as admin and returns the token."""
@@ -75,10 +81,16 @@ async def get_pb_admin_token():
         return None
     try:
         async with httpx.AsyncClient() as client:
+            auth_payload = {"identity": settings.PB_ADMIN_EMAIL, "password": settings.PB_ADMIN_PASS}
             response = await client.post(
-                f"{settings.PB_URL}/api/admins/auth-with-password",
-                json={"identity": settings.PB_ADMIN_EMAIL, "password": settings.PB_ADMIN_PASS}
+                f"{settings.PB_URL}/api/collections/_superusers/auth-with-password",
+                json=auth_payload,
             )
+            if response.status_code == 404:
+                response = await client.post(
+                    f"{settings.PB_URL}/api/admins/auth-with-password",
+                    json=auth_payload
+                )
             response.raise_for_status()
             token = response.json()["token"]
             logger.info("Successfully authenticated with PocketBase as admin.")
@@ -96,9 +108,22 @@ async def lifespan(app: FastAPI):
     FastAPI lifespan context manager for startup and shutdown events.
     Initializes global services.
     """
-    global ws_manager, tool_dispatcher, gemini_session_manager, message_router
+    global ws_manager, tool_dispatcher, gemini_session_manager, message_router, memory_store, interaction_logger
     
     logger.info(GREEN + "Starting Squishy 2.0 Backend Server" + RESET)
+
+    memory_store = PocketBaseMemoryStore(
+        pb_url=settings.PB_URL,
+        admin_email=settings.PB_ADMIN_EMAIL,
+        admin_password=settings.PB_ADMIN_PASS,
+        collection_name="saved_memories",
+    )
+    interaction_logger = PocketBaseInteractionLogger(
+        pb_url=settings.PB_URL,
+        admin_email=settings.PB_ADMIN_EMAIL,
+        admin_password=settings.PB_ADMIN_PASS,
+        collection_name="interaction_logs",
+    )
 
     # 1. Initialize WebSocket Manager
     ws_manager = WebSocketManager()
@@ -108,7 +133,13 @@ async def lifespan(app: FastAPI):
     tool_dispatcher.register_tool_schemas(squishy_tools)
 
     # 3. Initialize Gemini Session Manager
-    gemini_session_manager = GeminiSessionManager(ws_manager, tool_dispatcher)
+    gemini_session_manager = GeminiSessionManager(
+        ws_manager,
+        tool_dispatcher,
+        memory_store=memory_store,
+        interaction_logger=interaction_logger,
+    )
+    ws_manager.gemini_session_manager = gemini_session_manager
     await gemini_session_manager.initialize_gemini_client() # Pre-initialize GeminiLive
 
     # 4. Initialize Message Router (connects all services)
@@ -151,6 +182,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class SaveMemoryRequest(BaseModel):
+    participant_id: str
+    content: str
+    username: Optional[str] = None
+    source: str = "server_manual"
+    trigger_event: Optional[str] = None
+
+
+@app.get("/api/interactions")
+async def list_interactions(participant_id: str = Query(..., min_length=1)):
+    try:
+        return {
+            "items": await interaction_logger.list_interactions(participant_id=participant_id.strip()),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list interactions: {e}")
+
+
+@app.get("/api/memories")
+async def list_memories(participant_id: str = Query(..., min_length=1)):
+    try:
+        return {
+            "items": await memory_store.list_memories(participant_id=participant_id.strip()),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list memories: {e}")
+
+
+@app.post("/api/memories/save")
+async def save_memory(request: SaveMemoryRequest):
+    try:
+        item = await memory_store.save_memory(
+            participant_id=request.participant_id.strip(),
+            username=(request.username or "").strip() or "Server",
+            content=request.content.strip(),
+            source=request.source,
+            trigger_event=request.trigger_event,
+        )
+        return {"item": item}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save memory: {e}")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

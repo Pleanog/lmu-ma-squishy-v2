@@ -76,14 +76,14 @@ squishy_tools = [
     types.Tool(
         function_declarations=[
             types.FunctionDeclaration(
-                name="play_squishy_sound",
+                name="play_sound_effect",
                 description="Plays a specific sound through Squishy's speaker. Can be used for feedback, alerts, or expressive noises.",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
                         "sound_type": types.Schema(
                             type=types.Type.STRING,
-                            description="The type of sound to play. Examples: 'happy', 'sad', 'alert', 'confirm', 'error', 'chime'."
+                            description="The type of sound to play. Examples: 'happy', 'error', 'notification', 'annoyed'."
                         )
                     },
                     required=["sound_type"]
@@ -94,7 +94,7 @@ squishy_tools = [
     types.Tool(
         function_declarations=[
             types.FunctionDeclaration(
-                name="vibrate_squishy",
+                name="vibrate",
                 description="Activates Squishy's vibration motor. Can be used for tactile feedback or as a physical response.",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
@@ -108,5 +108,28 @@ squishy_tools = [
                 )
             )
         ]
-    )
+    ),
+    types.Tool(
+        function_declarations=[
+            types.FunctionDeclaration(
+                name="save_memory",
+                description=(
+                    "Saves an important piece of information for the current participant. "
+                    "Use this when the user asks to remember something or when a Save trigger was used."
+                ),
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "content": types.Schema(
+                            type=types.Type.STRING,
+                            description=(
+                                "Optional explicit text to save. "
+                                "If omitted, the backend saves the latest AI response."
+                            ),
+                        )
+                    },
+                ),
+            )
+        ]
+    ),
 ]
