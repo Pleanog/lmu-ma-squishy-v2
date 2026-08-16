@@ -22,7 +22,14 @@ from client.audio_handler import AudioHandler
 from client.audio_input_handler import AudioInputHandler
 from client.hardware_handler import HardwareHandler
 
-from config import BACKEND_WS_URL, CLIENT_CAPABILITIES
+from config import (
+    AUDIO_SAMPLE_RATE_OUTPUT,
+    BACKEND_WS_URL,
+    CLIENT_CAPABILITIES,
+    DISABLE_MIC_WHILE_AI_SPEAKS,
+    MIC_REENABLE_DELAY_MS,
+    NOISE_GATE_THRESHOLD,
+)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -32,11 +39,30 @@ logger = logging.getLogger(__name__)
 # print("Verfügbare Audio Geräte:")
 # print(sd.query_devices())
 
-NOISE_GATE_THRESHOLD = 300
-
 # Initialisiere den Audio-Output-Handler (für Sprachausgabe vom Backend)
 audio_output_handler = AudioHandler(hardware_samplerate=16000, channels=2, dtype='float32', volume_factor=1.0)
 audio_playback_queue = asyncio.Queue()
+ai_speaking_until = 0.0
+
+
+def mark_ai_audio_playback_active(audio_bytes: bytes, samplerate: int) -> None:
+    global ai_speaking_until
+
+    if not DISABLE_MIC_WHILE_AI_SPEAKS:
+        return
+
+    sample_count = len(audio_bytes) // 2
+    playback_duration_seconds = sample_count / float(samplerate) if samplerate > 0 else 0.0
+    tail_seconds = max(MIC_REENABLE_DELAY_MS, 0) / 1000.0
+    now = asyncio.get_running_loop().time()
+    ai_speaking_until = max(ai_speaking_until, now + playback_duration_seconds + tail_seconds)
+
+
+def microphone_upload_is_suppressed() -> bool:
+    if not DISABLE_MIC_WHILE_AI_SPEAKS:
+        return False
+
+    return asyncio.get_running_loop().time() < ai_speaking_until
 
 async def audio_playback_worker():
     while True:
@@ -45,9 +71,11 @@ async def audio_playback_worker():
         
         if data is None: # Abbruchsignal beim Beenden des Programms
             break
-            
+
+        mark_ai_audio_playback_active(data, AUDIO_SAMPLE_RATE_OUTPUT)
+
         # Führt die blockierende Play-Funktion in einem separaten Thread aus!
-        await asyncio.to_thread(audio_output_handler.play_audio, data, 24000)
+        await asyncio.to_thread(audio_output_handler.play_audio, data, AUDIO_SAMPLE_RATE_OUTPUT)
         
         # Sagt der Queue, dass dieser Chunk fertig ist
         audio_playback_queue.task_done()
@@ -81,7 +109,9 @@ async def send_recorded_audio_to_websocket(audio_bytes: bytes):
     """Sende Audio an WebSocket, filtert aber Hintergrundrauschen und Echos heraus."""
     if websocket_client and websocket_client.is_connected:
         if websocket_client.client_id == websocket_client.active_controller_id:
-            
+            if microphone_upload_is_suppressed():
+                audio_bytes = b'\x00' * len(audio_bytes)
+
             # --- NOISE GATE LOGIK ---
             # Wandle Bytes in Numpy-Array (16-bit Integer) um
             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -199,6 +229,11 @@ async def main():
     global websocket_client, audio_input_handler, hardware_handler
 
     logger.info("Starting Squishy Pi Client.")
+    logger.info(
+        "Mic suppression while AI speaks is %s (tail=%sms).",
+        "enabled" if DISABLE_MIC_WHILE_AI_SPEAKS else "disabled",
+        MIC_REENABLE_DELAY_MS,
+    )
 
     hardware_handler = HardwareHandler(
         on_sensor_update_callback=send_sensor_data_to_gemini,
