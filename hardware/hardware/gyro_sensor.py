@@ -80,28 +80,28 @@ class OrientationSensor(BaseSensor):
         state_str = str(state)
         if state_str == "+Z":
             return {
-                "sensor_id": "gesture",
+                "sensor_id": "gyro",
                 "event": "place_on_table",
                 "value": state_str,
                 "intensity": None,
             }
         if state_str == "+X":
             return {
-                "sensor_id": "gesture",
+                "sensor_id": "gyro",
                 "event": "target_focus",
                 "value": state_str,
                 "intensity": None,
             }
         if state_str == "-X":
             return {
-                "sensor_id": "gesture",
+                "sensor_id": "gyro",
                 "event": "horizontal_turn",
                 "value": state_str,
                 "intensity": None,
             }
         if state_str in {"+Y", "-Y"}:
             return {
-                "sensor_id": "gesture",
+                "sensor_id": "gyro",
                 "event": "vertical_shake",
                 "value": state_str,
                 "intensity": None,

@@ -35,7 +35,7 @@ class TouchSensor(BaseSensor):
             # Das ist extrem empfindlich und sollte selbst schwache Signale 
             # über das Leitgarn zuverlässig erkennen.
             for pin in self.pins:
-                self.mpr121[pin].threshold = 2
+                self.mpr121[pin].threshold = 8
                 
             logger.info(f"MPR121 Touch Sensor '{self.name}' verbunden. Pins: {self.pins}. Empfindlichkeit ist auf MAX (2).")
         except Exception as e:
@@ -45,7 +45,7 @@ class TouchSensor(BaseSensor):
         # Tracking für Gesten
         self.touch_history = []
         self.last_touch_time = 0
-        self.gesture_timeout = 0.4  # Zeitfenster für Streichel-Erkennung
+        self.touch_timeout = 0.4  # Zeitfenster für Streichel-Erkennung
         self._last_head_tap_ts = 0.0
         self._head_tap_window_seconds = 0.8
 
@@ -60,6 +60,7 @@ class TouchSensor(BaseSensor):
 
         # Welche Pins werden *jetzt* berührt?
         currently_touched = [p for p in self.pins if self.mpr121[p].value]
+
         current_time = time.time()
 
         if currently_touched:
@@ -84,7 +85,7 @@ class TouchSensor(BaseSensor):
             return "TOUCHING"
 
         else:
-            if self.touch_history and (current_time - self.last_touch_time > self.gesture_timeout):
+            if self.touch_history and (current_time - self.last_touch_time > self.touch_timeout):
                 history = self.touch_history
                 self.touch_history = [] 
                 
@@ -135,7 +136,7 @@ class TouchSensor(BaseSensor):
 
         if state_str == "BOTH_SIDES_TOUCH":
             return {
-                "sensor_id": "gesture",
+                "sensor_id": "touch",
                 "event": "squeeze_sides",
                 "value": "both_sides_touch",
                 "intensity": None,
@@ -151,8 +152,8 @@ class TouchSensor(BaseSensor):
 
         if pin == 8:
             return {
-                "sensor_id": "gesture",
-                "event": "hush_gesture",
+                "sensor_id": "touch",
+                "event": "hush_touch",
                 "value": f"pin={pin}",
                 "intensity": None,
             }
@@ -162,7 +163,7 @@ class TouchSensor(BaseSensor):
             if (now - self._last_head_tap_ts) <= self._head_tap_window_seconds:
                 self._last_head_tap_ts = 0.0
                 return {
-                    "sensor_id": "gesture",
+                    "sensor_id": "touch",
                     "event": "multi_tap_head_open_hand",
                     "value": "head_double_tap",
                     "intensity": None,
@@ -171,8 +172,45 @@ class TouchSensor(BaseSensor):
             return None
 
         return {
-            "sensor_id": "gesture",
+            "sensor_id": "touch",
             "event": "firm_press_head",
             "value": f"pin={pin}",
             "intensity": None,
         }
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    print("\n--- Starte TouchSensor Pin-Test ---")
+    print("Gebe alle 2 Sekunden den Status aller Pins als Emojis aus (🟢 = Berührt, ⚪ = Frei).")
+    print("Drücke STRG+C um den Test zu beenden.\n")
+
+    # Initialisiere den Sensor
+    sensor = TouchSensor("TouchSensor Test")
+
+    try:
+        while True:
+            if sensor.mpr121 is not None:
+                # Sammle die Emojis für jeden Pin
+                visual_states = []
+                for pin in sensor.pins:
+                    is_touched = sensor.mpr121[pin].value
+                    emoji = "🟢" if is_touched else "⚪"
+                    
+                    # Format z.B. "0:⚪" oder "4:🟢"
+                    visual_states.append(f"{pin}:{emoji}")
+                
+                # Verbinde alles zu einem schönen, lesbaren String
+                output_str = "  ".join(visual_states)
+                
+                # Aktuelle Uhrzeit formatieren
+                current_time_str = time.strftime('%H:%M:%S')
+                print(f"[{current_time_str}] {output_str}")
+            else:
+                print("Fehler: MPR121 Sensor nicht initialisiert oder nicht gefunden.")
+            
+            # 2 Sekunden warten
+            time.sleep(2)
+            
+    except KeyboardInterrupt:
+        print("\nTest beendet. Tschüss!")

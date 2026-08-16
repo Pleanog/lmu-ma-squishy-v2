@@ -39,9 +39,9 @@ class BaseSensor:
 
 
 if __name__ == "__main__":
-    from touch_sensor import TouchSensor
-    from flex_sensor import FlexSensor
-    from gyro_sensor import OrientationSensor
+    from .touch_sensor import TouchSensor
+    from .flex_sensor import FlexSensor
+    from .gyro_sensor import OrientationSensor
 
     logging.basicConfig(level=logging.INFO)
     print("\n--- Starte Sensor-Test ---")

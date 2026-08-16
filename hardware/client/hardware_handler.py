@@ -94,13 +94,13 @@ class HardwareHandler:
                     if not sensor_id or not event_type:
                         continue
 
-                    await self._emit_sensor_event(
-                        sensor_id=str(sensor_id),
-                        event_type=str(event_type),
-                        value=value,
-                        intensity=intensity,
-                        source=sensor.name,
-                    )
+                    # await self._emit_sensor_event(
+                    #     sensor_id=str(sensor_id),
+                    #     event_type=str(event_type),
+                    #     value=value,
+                    #     intensity=intensity,
+                    #     source=sensor.name,
+                    # )
 
                 await asyncio.sleep(0.5) # Prüfe 2x pro Sekunde
         except asyncio.CancelledError:
