@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+import os
 import json # Für json.dumps im Tool Call Logging
 from typing import Union, Dict, Any, Optional
 from client.websocket_client import (
@@ -51,11 +52,11 @@ async def audio_playback_worker():
         # Sagt der Queue, dass dieser Chunk fertig ist
         audio_playback_queue.task_done()
 
-async def send_sensor_data_to_gemini(text_message: str):
-    """Wird vom HardwareHandler gerufen, wenn ein Sensor anschlägt."""
+async def send_sensor_data_to_gemini(sensor_id: str, event_type: str, value: Any, intensity: Optional[str] = None):
+    """Wird vom HardwareHandler gerufen und sendet strukturierte Sensor-Events an das Backend."""
     if websocket_client and websocket_client.is_connected:
-        logger.info(f"Sende Sensor-Kontext an KI: {text_message}")
-        await websocket_client.send_text_message(text_message)
+        logger.info(f"Sende Sensor-Event: sensor_id={sensor_id}, event={event_type}, value={value}, intensity={intensity}")
+        await websocket_client.send_sensor_event(sensor_id, event_type, value, intensity)
 
 # Globale Instanzen
 websocket_client: Optional[WebSocketClient] = None
@@ -177,6 +178,14 @@ async def handle_backend_message(data: Union[AllIncomingJsonEvents, bytes]):
         elif message_type == "tool_call":
             tool_call_data: ToolCallEvent = data
             logger.info(f"Tool Call Received: {tool_call_data.get('tool_name')} with args: {tool_call_data.get('args')} and suggested_action: {tool_call_data.get('suggested_action')}")
+        elif message_type == "system_command":
+            command = data.get("command") or data.get("action")
+            logger.warning(f"System command received: {command}")
+            if command == "restart":
+                logger.warning("🚨 Restart command received. Restarting squishy service...")
+                if websocket_client:
+                    await websocket_client.disconnect()
+                os.system("sudo systemctl restart squishy")
         else:
             logger.warning(f"Received unknown JSON message: {data}")
     else:

@@ -7,6 +7,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import WebSocketTestView from './views/WebSocketTestView.vue';
 // import GeminiLiveDemo from './views/GeminiLiveDemo.vue';
 import GeminiLiveDemoZwo from './views/GeminiLiveDemoZwo.vue';
+import AdminDashboardView from './views/AdminDashboardView.vue';
 
 
 const router = createRouter({
@@ -20,6 +21,7 @@ const router = createRouter({
     { path: '/ws-test', name: 'ws-test', component: WebSocketTestView, meta: { requiresAuth: true } },
     // { path: '/gemini', name: 'gemini', component: GeminiLiveDemo, meta: { requiresAuth: true } },
     { path: '/squishy', name: 'gemini-zwo', component: GeminiLiveDemoZwo, meta: { requiresAuth: true } },
+    { path: '/admin-dashboard', name: 'admin-dashboard', component: AdminDashboardView, meta: { requiresAuth: true } },
   ],
 });
 

@@ -53,6 +53,12 @@ class ErrorEvent(IncomingBackendJsonEvent): # Annahme, dass es diese geben könn
     type: Literal["error"]
     message: str
 
+class SystemCommandEvent(IncomingBackendJsonEvent):
+    type: Literal["system_command"]
+    command: str
+    target: Optional[str]
+    payload: Optional[Dict[str, Any]]
+
 # Union-Typ für alle möglichen JSON-Events
 AllIncomingJsonEvents = Union[
     RegistrationAckEvent,
@@ -62,6 +68,7 @@ AllIncomingJsonEvents = Union[
     ToolCallEvent,
     SystemMessageEvent,
     ErrorEvent,
+    SystemCommandEvent,
 ]
 
 # Wir geben entweder geparste JSON-Objekte oder rohe Audio-Bytes weiter

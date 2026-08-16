@@ -130,6 +130,12 @@ class SessionResetEvent(BaseEvent):
     type: str = "session_reset"
     message: str = "Gemini session reset."
 
+class SystemCommandEvent(BaseEvent):
+    type: str = "system_command"
+    command: str
+    target: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+
 # Union of all possible outgoing event types
 OutgoingEventType = Union[
     RegistrationAckEvent,
@@ -142,6 +148,7 @@ OutgoingEventType = Union[
     ErrorEvent,
     SystemMessageEvent,
     SessionResetEvent,
+    SystemCommandEvent,
 ]
 
 class IncomingEvent(str, Enum):
@@ -178,6 +185,7 @@ class OutgoingEvent(str, Enum):
     ERROR = "error"
     SYSTEM_MESSAGE = "system_message"
     SESSION_RESET = "session_reset"
+    SYSTEM_COMMAND = "system_command"
 
     @property
     def model(self):
@@ -192,4 +200,5 @@ class OutgoingEvent(str, Enum):
             OutgoingEvent.ERROR: ErrorEvent,
             OutgoingEvent.SYSTEM_MESSAGE: SystemMessageEvent,
             OutgoingEvent.SESSION_RESET: SessionResetEvent,
+            OutgoingEvent.SYSTEM_COMMAND: SystemCommandEvent,
         }[self]

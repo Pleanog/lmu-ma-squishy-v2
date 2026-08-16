@@ -34,3 +34,13 @@ class FlexSensor(BaseSensor):
         elif state == "RELEASED":
             return f"Das Drücken an {self.name} hat aufgehört."
         return None 
+
+    def format_event(self, state):
+        if state == "BENT":
+            return {
+                "sensor_id": "gesture",
+                "event": "firm_press_head",
+                "value": "flex_bent",
+                "intensity": None,
+            }
+        return None

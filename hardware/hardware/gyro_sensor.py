@@ -75,3 +75,35 @@ class OrientationSensor(BaseSensor):
     def format_message(self, state):
         # Das Kürzel (z.B. "+Z") im Dictionary nachschlagen
         return self.mapping.get(state, f"Unbekannte Position: {state}")
+
+    def format_event(self, state):
+        state_str = str(state)
+        if state_str == "+Z":
+            return {
+                "sensor_id": "gesture",
+                "event": "place_on_table",
+                "value": state_str,
+                "intensity": None,
+            }
+        if state_str == "+X":
+            return {
+                "sensor_id": "gesture",
+                "event": "target_focus",
+                "value": state_str,
+                "intensity": None,
+            }
+        if state_str == "-X":
+            return {
+                "sensor_id": "gesture",
+                "event": "horizontal_turn",
+                "value": state_str,
+                "intensity": None,
+            }
+        if state_str in {"+Y", "-Y"}:
+            return {
+                "sensor_id": "gesture",
+                "event": "vertical_shake",
+                "value": state_str,
+                "intensity": None,
+            }
+        return None

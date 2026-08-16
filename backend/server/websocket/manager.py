@@ -239,6 +239,23 @@ class WebSocketManager:
             if client.state and capability in client.state.capabilities
         }
 
+    def get_clients_snapshot(self) -> list[dict]:
+        snapshot = []
+        for cid, client in self.active_clients.items():
+            if not client.state:
+                continue
+            snapshot.append(
+                {
+                    "client_id": cid,
+                    "client_type": getattr(client.state.client_type, "value", str(client.state.client_type)),
+                    "capabilities": sorted([getattr(cap, "value", str(cap)) for cap in client.state.capabilities]),
+                    "username": client.state.username,
+                    "participant_id": client.state.participant_id,
+                    "is_active_controller": cid == self.active_controller_id,
+                }
+            )
+        return snapshot
+
     async def start_event_processing(self):
         """Main loop for processing events from all connected clients."""
         while True:

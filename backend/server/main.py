@@ -18,7 +18,7 @@ from websocket.router import MessageRouter
 from gemini.session import GeminiSessionManager
 from tools.dispatcher import ToolDispatcher
 from tools.squishy_tools import squishy_tools # The actual tool definitions
-from models.events import ErrorEvent, SystemMessageEvent
+from models.events import ErrorEvent, SystemMessageEvent, SystemCommandEvent
 from interaction_logger import PocketBaseInteractionLogger
 from memory_store import PocketBaseMemoryStore
 
@@ -192,6 +192,16 @@ class SaveMemoryRequest(BaseModel):
     trigger_event: Optional[str] = None
 
 
+class UpdateGeminiApiKeyRequest(BaseModel):
+    api_key: Optional[str] = None
+    use_fallback: bool = True
+
+
+class HardwareCommandRequest(BaseModel):
+    command: str = "restart"
+    payload: Optional[dict] = None
+
+
 @app.get("/api/interactions")
 async def list_interactions(participant_id: str = Query(..., min_length=1)):
     try:
@@ -210,6 +220,72 @@ async def list_memories(participant_id: str = Query(..., min_length=1)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list memories: {e}")
+
+
+@app.get("/api/admin/status")
+async def admin_status():
+    clients = ws_manager.get_clients_snapshot()
+    client_counts = {
+        "total": len(clients),
+        "frontend": sum(1 for c in clients if c.get("client_type") == "frontend"),
+        "hardware": sum(1 for c in clients if c.get("client_type") == "hardware"),
+        "monitor": sum(1 for c in clients if c.get("client_type") == "monitor"),
+    }
+    return {
+        "clients": clients,
+        "client_counts": client_counts,
+        "active_controller_id": ws_manager.active_controller_id,
+        "routing_config": ws_manager.get_routing_config(),
+        "last_input_client_id": ws_manager.last_input_client_id,
+        "last_input_modality": ws_manager.last_input_modality,
+        "gemini": gemini_session_manager.get_runtime_status(),
+    }
+
+
+@app.post("/api/admin/gemini-api-key")
+async def update_gemini_api_key(request: UpdateGeminiApiKeyRequest):
+    try:
+        return await gemini_session_manager.update_api_key(
+            api_key=request.api_key,
+            use_fallback=request.use_fallback,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update Gemini API key: {e}")
+
+
+@app.post("/api/admin/session/restart")
+async def force_restart_session():
+    try:
+        await gemini_session_manager.reset_session()
+        return {"status": "ok", "message": "Gemini session force-restarted."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to restart Gemini session: {e}")
+
+
+@app.post("/api/admin/hardware/restart")
+async def restart_hardware_clients(request: HardwareCommandRequest):
+    try:
+        hardware_client_ids = [
+            c["client_id"]
+            for c in ws_manager.get_clients_snapshot()
+            if c.get("client_type") == "hardware"
+        ]
+        for client_id in hardware_client_ids:
+            await ws_manager.send_to_client(
+                client_id,
+                SystemCommandEvent(
+                    command=request.command,
+                    target="hardware",
+                    payload=request.payload,
+                ),
+            )
+        return {
+            "status": "ok",
+            "sent_to_clients": len(hardware_client_ids),
+            "command": request.command,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send hardware restart command: {e}")
 
 
 @app.post("/api/memories/save")

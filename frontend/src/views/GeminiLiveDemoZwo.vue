@@ -4,6 +4,14 @@
   <div class="p-4 flex justify-content-center">
     <div class="corner-actions">
       <Button
+        icon="pi pi-shield"
+        rounded
+        text
+        severity="secondary"
+        aria-label="Open admin dashboard"
+        @click="openAdminDashboard"
+      />
+      <Button
         icon="pi pi-bookmark"
         rounded
         text
@@ -64,6 +72,68 @@
           </div>
           <small class="text-color-secondary">Die Hardware darf weiter streamen, aber der Server kann Eingabe/Ausgabe gezielt ignorieren.</small>
         </div>
+
+        <div class="flex flex-column gap-2 mt-2">
+          <label for="gemini-api-key" class="font-medium">Gemini API Key (dynamisch)</label>
+          <InputText id="gemini-api-key" v-model="geminiApiKeyDraft" type="password" placeholder="Neuen API Key einfügen" />
+          <small class="text-color-secondary">
+            Setzt den Gemini-Key ohne Server-Neustart. Danach wird die aktive Gemini-Session technisch neu initialisiert.
+          </small>
+          <div class="flex gap-2 flex-wrap">
+            <Button
+              label="API Key anwenden"
+              icon="pi pi-key"
+              size="small"
+              :loading="adminActionLoading"
+              @click="applyGeminiApiKey"
+            />
+            <Button
+              label="Fallback auf .env Key"
+              icon="pi pi-undo"
+              size="small"
+              severity="secondary"
+              outlined
+              :loading="adminActionLoading"
+              @click="fallbackGeminiApiKey"
+            />
+          </div>
+        </div>
+
+        <div class="flex flex-column gap-2 mt-2">
+          <label class="font-medium">Recovery / Admin Aktionen</label>
+          <small class="text-color-secondary">
+            Nutze diese Buttons, wenn Gemini nicht mehr antwortet oder die Hardware neu gestartet werden soll.
+          </small>
+          <div class="flex gap-2 flex-wrap">
+            <Button
+              label="Force Restart Gemini Session"
+              icon="pi pi-refresh"
+              size="small"
+              severity="warning"
+              :loading="adminActionLoading"
+              @click="forceRestartSession"
+            />
+            <Button
+              label="Restart Hardware Client"
+              icon="pi pi-power-off"
+              size="small"
+              severity="danger"
+              outlined
+              :loading="adminActionLoading"
+              @click="restartHardwareClient"
+            />
+          </div>
+          <Button
+            label="Open Admin Dashboard"
+            icon="pi pi-external-link"
+            text
+            size="small"
+            class="justify-content-start p-0 mt-1"
+            @click="openAdminDashboard"
+          />
+        </div>
+
+        <small v-if="adminActionMessage" class="text-color-secondary">{{ adminActionMessage }}</small>
       </div>
       <template #footer>
         <Button label="Abbrechen" severity="secondary" text @click="usernameDialogVisible = false" />
@@ -134,14 +204,6 @@
 
         <div v-if="isConnected && !sessionEnded" class="conversation-shell">
           <div class="utility-actions">
-            <Button
-              :label="mediaHandler.isRecording.value ? 'Stop Mic' : 'Start Mic'"
-              :icon="mediaHandler.isRecording.value ? 'pi pi-microphone-slash' : 'pi pi-microphone'"
-              :severity="mediaHandler.isRecording.value ? 'danger' : undefined"
-              :disabled="!isActiveController && activeControllerId !== null"
-              @click="toggleMic"
-              v-tooltip.bottom="!isActiveController && activeControllerId !== null ? 'Only active controller can send mic input' : ''"
-            />
             <Button label="Disconnect" icon="pi pi-times" severity="danger" @click="handleDisconnect" />
           </div>
 
@@ -189,6 +251,14 @@
           </div>
 
           <div class="composer">
+            <Button
+              :label="mediaHandler.isRecording.value ? 'Voice Mode deaktivieren' : 'Voice Mode aktivieren'"
+              :icon="mediaHandler.isRecording.value ? 'pi pi-microphone-slash' : 'pi pi-microphone'"
+              :severity="mediaHandler.isRecording.value ? 'danger' : 'secondary'"
+              :disabled="!isActiveController && activeControllerId !== null"
+              @click="toggleMic"
+              v-tooltip.top="!isActiveController && activeControllerId !== null ? 'Only active controller can send mic input' : 'Aktiviert/Deaktiviert Sprachaufnahme über das Mikrofon.'"
+            />
             <InputText
               v-model="textInput"
               placeholder="Type a message..."
@@ -227,6 +297,7 @@ import json from 'highlight.js/lib/languages/json';
 import bash from 'highlight.js/lib/languages/bash';
 import 'highlight.js/styles/github-dark.css';
 import 'katex/dist/katex.min.css';
+import { useRouter } from 'vue-router';
 
 import { MediaHandler } from '../utils/media-handler';
 import { GeminiClient } from '../utils/gemini-client';
@@ -283,6 +354,10 @@ function getApiBaseUrl(): string {
   return 'http://127.0.0.1:8000';
 }
 
+function openAdminDashboard(): void {
+  router.push('/admin-dashboard');
+}
+
 function formatMemoryDate(rawDate: string): string {
   const parsed = new Date(rawDate);
   if (Number.isNaN(parsed.getTime())) return rawDate;
@@ -303,7 +378,11 @@ const usernameDialogVisible = ref(false);
 const memoriesDialogVisible = ref(false);
 const memoriesLoading = ref(false);
 const memoriesError = ref('');
+const geminiApiKeyDraft = ref('');
+const adminActionLoading = ref(false);
+const adminActionMessage = ref('');
 let geminiClient: GeminiClient | null = null;
+const router = useRouter();
 
 // Chat message interface updated for new types
 interface ChatMessage {
@@ -657,6 +736,107 @@ async function loadMemories(): Promise<void> {
 async function openMemoriesDialog(): Promise<void> {
   memoriesDialogVisible.value = true;
   await loadMemories();
+}
+
+async function runAdminAction<T>(action: () => Promise<T>, successMessage: string): Promise<T | null> {
+  adminActionLoading.value = true;
+  adminActionMessage.value = '';
+  try {
+    const result = await action();
+    adminActionMessage.value = successMessage;
+    return result;
+  } catch (error: any) {
+    const message = error?.message ?? String(error);
+    adminActionMessage.value = `Fehler: ${message}`;
+    appendMessage('error', adminActionMessage.value);
+    return null;
+  } finally {
+    adminActionLoading.value = false;
+  }
+}
+
+async function applyGeminiApiKey(): Promise<void> {
+  const key = geminiApiKeyDraft.value.trim();
+  if (!key) {
+    adminActionMessage.value = 'Bitte zuerst einen API Key einfügen oder den Fallback-Button nutzen.';
+    return;
+  }
+
+  const response = await runAdminAction(
+    async () => {
+      const res = await fetch(`${getApiBaseUrl()}/api/admin/gemini-api-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key, use_fallback: true }),
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      return res.json();
+    },
+    'Gemini API Key aktualisiert. Session wurde neu initialisiert.'
+  );
+
+  if (response) {
+    geminiApiKeyDraft.value = '';
+    appendMessage('system', 'Gemini API key updated via admin settings.');
+  }
+}
+
+async function fallbackGeminiApiKey(): Promise<void> {
+  const response = await runAdminAction(
+    async () => {
+      const res = await fetch(`${getApiBaseUrl()}/api/admin/gemini-api-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: '', use_fallback: true }),
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      return res.json();
+    },
+    'Fallback auf .env Gemini API Key aktiviert.'
+  );
+
+  if (response) {
+    appendMessage('system', 'Gemini API key fallback to default applied.');
+  }
+}
+
+async function forceRestartSession(): Promise<void> {
+  await runAdminAction(
+    async () => {
+      const res = await fetch(`${getApiBaseUrl()}/api/admin/session/restart`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      return res.json();
+    },
+    'Gemini Session wurde neu gestartet.'
+  );
+}
+
+async function restartHardwareClient(): Promise<void> {
+  const response = await runAdminAction(
+    async () => {
+      const res = await fetch(`${getApiBaseUrl()}/api/admin/hardware/restart`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'restart' }),
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      return res.json();
+    },
+    'Restart-Befehl an Hardware-Clients gesendet.'
+  );
+  if (response && typeof response.sent_to_clients === 'number') {
+    appendMessage('system', `Hardware restart command sent to ${response.sent_to_clients} client(s).`);
+  }
 }
 
 // WebSocket Callbacks for GeminiClient

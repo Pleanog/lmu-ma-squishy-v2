@@ -130,12 +130,28 @@ Goal: Both Frontend and Hardware can be active simultaneously without clashing.
 
 🛠️ Phase 3: Server Admin & Hardware Control (Frontend & Backend)
 
-    Dynamic API Key: Add an input field in the Vue UI / Settings Modal to set/update the Google Gemini API Key dynamically, preventing the need to restart the FastAPI server manually.
+    Step 1.
+      Dynamic API Key: Add an input field in the Vue UI / Settings Modal to set/update the Google Gemini API Key dynamically, preventing the need to restart the FastAPI server manually.
+      This needs to make sure that when the api key was changed the old session with the old key is removed totally.
 
-    Session Control: Add a "Force Restart Session" button in the frontend that sends a signal to the backend to gracefully close and reopen the Gemini Live connection.
+      Session Control: Add a "Force Restart Session" button in the frontend that sends a signal to the backend to gracefully close and reopen the Gemini Live connection. if this is not allready in place. this should be in settings modal as well, as a way to restart if a problem occurs with gemini and it does not answer anymore. I allready have the disconnect button on the ui, this can be merged if they would share the same logic, not sure. we can also keep both if they serve a differen tpurpose. all settings hsould have a little text helping with explaining what the setting does, especially the technical ones. The start mic button can move to the chat bar left side of the text input field and make rename it to: voice mode activate / deactivate? or some ui friendly term / or icon with a tooltip
 
-    Hardware Restart: Add a "Restart Hardware Client" button in the frontend. The backend should broadcast a specific WebSocket command (e.g., {"type": "system_command", "action": "restart"}) to the Hardware Client. (Note: The hardware python script will handle the actual os.execv restart logic).
+      Hardware Restart: Add a "Restart Hardware Client" button in the frontend to the settings modal. The backend should broadcast a specific WebSocket command (e.g., {"type": "system_command", "action": "restart"}) to the Hardware Client. (Note: The hardware python script will handle the actual os.execv restart logic).
+      i allready have a service that auto starts the hardware on power that we maybe can call like this:
+      import os
 
-    Admin Dashboard (Optional/Later): A simple view in the frontend showing the connection status of all WebSocket clients (Frontend, Hardware) and a rough estimate of session duration/activity.
+      # in deiner handle_backend_message in main.py:
+      elif message_type == "system_command":
+          if data.get("command") == "restart":
+              logger.warning("🚨 Restart-Befehl vom Frontend erhalten! Starte Service neu...")
+              # Beende den WebSocket sauber
+              await websocket_client.disconnect()
+              # Weise das Betriebssystem an, den Service neu zu starten
+              os.system("sudo systemctl restart squishy")
 
-    One unified way to start server, pocketbase database, frontend and hardware at once, so it is easier to manage everything. the hardware is physically on a different device so here it might not make sense to do so. So maybe here we dont include it into our master starter scribt or however is the best solution.
+
+      In the frontend i want a new page that can be used to monitor the state of everything if possible without a lot of changes (this pages should be reachable via the setting modal as a small text link button):
+      Admin Dashboard: A simple view in the frontend showing the connection status of all WebSocket clients (Frontend, Hardware) and a rough estimate of session duration/activity.
+
+    Step 2. 
+      One unified way to start server, pocketbase database, frontend and hardware at once, so it is easier to manage everything. the hardware is physically on a different device so here it might not make sense to do so. So maybe here we dont include it into our master starter scribt or however is the best solution.

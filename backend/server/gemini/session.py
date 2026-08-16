@@ -7,7 +7,6 @@ from uuid import uuid4
 from datetime import datetime
 import time # <-- NEU: Importiere time für Inaktivitäts-Monitor
 from functools import partial
-from functools import partial
 
 from google.genai import types
 from models.client_state import ClientCapability
@@ -58,6 +57,8 @@ class GeminiSessionManager:
         self.username = username.strip() or "Gast"
         self.memory_store = memory_store
         self.interaction_logger = interaction_logger
+        self._default_api_key = settings.GEMINI_API_KEY
+        self._runtime_api_key: Optional[str] = None
 
         self.audio_input_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self.text_input_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -94,6 +95,32 @@ class GeminiSessionManager:
             "Du bist Teil eines Hardware-Prototyps und hilfst dabei, die Interaktion mit der KI zu testen."
         )
 
+    def _resolve_api_key(self) -> str:
+        runtime_key = (self._runtime_api_key or "").strip()
+        if runtime_key:
+            return runtime_key
+        return (self._default_api_key or "").strip()
+
+    def get_api_key_status(self) -> Dict[str, Any]:
+        has_runtime_key = bool((self._runtime_api_key or "").strip())
+        has_default_key = bool((self._default_api_key or "").strip())
+        return {
+            "source": "runtime" if has_runtime_key else "default",
+            "has_runtime_key": has_runtime_key,
+            "has_default_key": has_default_key,
+            "is_configured": has_runtime_key or has_default_key,
+        }
+
+    def get_runtime_status(self) -> Dict[str, Any]:
+        last_activity_epoch = self._last_activity_time
+        return {
+            "is_session_active": self.is_session_active,
+            "last_activity_epoch": last_activity_epoch,
+            "seconds_since_last_activity": max(0.0, time.time() - last_activity_epoch),
+            "inactivity_timeout_seconds": self.INACTIVITY_TIMEOUT_SECONDS,
+            "api_key": self.get_api_key_status(),
+        }
+
     def set_username(self, username: str):
         sanitized_username = (username or "Gast").strip() or "Gast"
         self.username = sanitized_username
@@ -106,6 +133,10 @@ class GeminiSessionManager:
             logger.warning("GeminiLive client already initialized.")
             return
 
+        effective_api_key = self._resolve_api_key()
+        if not effective_api_key:
+            raise RuntimeError("No Gemini API key configured (runtime or default).")
+
         tool_mapping: Dict[str, Callable[..., Any]] = {}
         for tool_schema in self.tool_dispatcher.get_all_tool_schemas():
             for func_declaration in tool_schema.function_declarations:
@@ -113,7 +144,7 @@ class GeminiSessionManager:
                 tool_mapping[func_declaration.name] = partial(self._tool_call_wrapper, func_declaration.name)
 
         self._gemini_live_client = GeminiLive(
-            api_key=settings.GEMINI_API_KEY,
+            api_key=effective_api_key,
             model=settings.MODEL,
             input_sample_rate=settings.AUDIO_SAMPLE_RATE,
             tools=self.tool_dispatcher.get_all_tool_schemas(),
@@ -121,6 +152,43 @@ class GeminiSessionManager:
             system_prompt=self.build_system_prompt()
         )
         logger.info("GeminiLive client initialized with tool mapping.")
+
+    async def update_api_key(
+        self,
+        api_key: Optional[str],
+        use_fallback: bool = True,
+    ) -> Dict[str, Any]:
+        new_runtime_key = (api_key or "").strip()
+        if not new_runtime_key and not use_fallback:
+            raise ValueError("api_key is empty and fallback is disabled.")
+
+        if new_runtime_key:
+            self._runtime_api_key = new_runtime_key
+            new_source = "runtime"
+        else:
+            self._runtime_api_key = None
+            new_source = "default"
+
+        was_active = self.is_session_active
+        await self.stop_session(announce=False, reset_gemini_client=True)
+        await self.initialize_gemini_client()
+        if was_active:
+            await self.start_session(announce=False)
+
+        await self.ws_manager.broadcast(
+            SystemMessageEvent(
+                message=(
+                    f"Gemini API key updated ({new_source}). "
+                    "Gemini session client reinitialized."
+                )
+            )
+        )
+        return {
+            "status": "ok",
+            "source": new_source,
+            "session_restarted": was_active,
+            "api_key_status": self.get_api_key_status(),
+        }
 
     async def _tool_call_wrapper(self, bound_tool_name: str, **kwargs: Any) -> types.FunctionResponse:
         """

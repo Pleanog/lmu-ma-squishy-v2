@@ -1,5 +1,6 @@
 import logging
 import time
+import time
 from .base_sensor import BaseSensor
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ class TouchSensor(BaseSensor):
         self.touch_history = []
         self.last_touch_time = 0
         self.gesture_timeout = 0.4  # Zeitfenster für Streichel-Erkennung
+        self._last_head_tap_ts = 0.0
+        self._head_tap_window_seconds = 0.8
 
     def get_location_name(self, pin):
         # Gibt "Kopf", "Front" etc. zurück. 
@@ -60,6 +63,9 @@ class TouchSensor(BaseSensor):
         current_time = time.time()
 
         if currently_touched:
+            if 0 in currently_touched and 2 in currently_touched:
+                return "BOTH_SIDES_TOUCH"
+
             is_first_touch = len(self.touch_history) == 0
             self.last_touch_time = current_time
             
@@ -121,5 +127,52 @@ class TouchSensor(BaseSensor):
             ort_end = self.get_location_name(pin_end)
             
             return f"Squishy wurde sanft von [{ort_start}] nach [{ort_end}] gestreichelt."
-            
+             
         return None
+
+    def format_event(self, state):
+        state_str = str(state)
+
+        if state_str == "BOTH_SIDES_TOUCH":
+            return {
+                "sensor_id": "gesture",
+                "event": "squeeze_sides",
+                "value": "both_sides_touch",
+                "intensity": None,
+            }
+
+        if not state_str.startswith("BERUEHRUNG_START_"):
+            return None
+
+        try:
+            pin = int(state_str.split("_")[-1])
+        except Exception:
+            return None
+
+        if pin == 8:
+            return {
+                "sensor_id": "gesture",
+                "event": "hush_gesture",
+                "value": f"pin={pin}",
+                "intensity": None,
+            }
+
+        if pin == 4:
+            now = time.time()
+            if (now - self._last_head_tap_ts) <= self._head_tap_window_seconds:
+                self._last_head_tap_ts = 0.0
+                return {
+                    "sensor_id": "gesture",
+                    "event": "multi_tap_head_open_hand",
+                    "value": "head_double_tap",
+                    "intensity": None,
+                }
+            self._last_head_tap_ts = now
+            return None
+
+        return {
+            "sensor_id": "gesture",
+            "event": "firm_press_head",
+            "value": f"pin={pin}",
+            "intensity": None,
+        }
