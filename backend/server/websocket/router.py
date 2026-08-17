@@ -153,7 +153,7 @@ class MessageRouter:
             return False
 
         if gesture_name == "press_head":
-            await self.gemini_session.reset_session()
+            # await self.gemini_session.reset_session()
             await self.ws_manager.broadcast(
                 SystemCommandEvent(command="set_microphone_state", target="frontend", payload={"enabled": True})
             )

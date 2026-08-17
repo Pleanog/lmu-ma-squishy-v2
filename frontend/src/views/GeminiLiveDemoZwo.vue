@@ -1181,6 +1181,7 @@ function sendText(): void {
     currentGeminiMessageIndex = null;
     currentUserMessageIndex = null;
     geminiClient.sendText(text);
+    void setMicrophoneEnabled(false);
     appendMessage("user", text);
     textInput.value = "";
   }
