@@ -78,6 +78,7 @@ class GeminiSessionManager:
         self._last_ai_response_text: Optional[str] = None
         self._current_ai_response_buffer: str = ""
         self._response_mode: str = "text"
+        self._response_mode_lock_until_epoch: float = 0.0
 
         logger.info("GeminiSessionManager initialized.")
 
@@ -147,10 +148,14 @@ class GeminiSessionManager:
         }
 
     def set_response_mode_for_audio_input(self) -> None:
+        if time.time() < self._response_mode_lock_until_epoch:
+            return
         self._response_mode = "voice"
 
     def set_response_mode_for_text_input(self) -> None:
         self._response_mode = "text"
+        # Prevent trailing mic chunks from flipping the mode right after a text send.
+        self._response_mode_lock_until_epoch = time.time() + 1.0
 
     def should_emit_audio_output(self) -> bool:
         return self._response_mode == "voice"
