@@ -2,10 +2,10 @@
 
 import asyncio
 import logging
-from typing import Dict, Any, List, Optional, Type, Callable
+from typing import Any, List
 from google.genai import types
 
-from models.events import ToolCallEvent, ToolResponseEvent, ErrorEvent
+from models.events import ToolCallEvent, ErrorEvent
 from websocket.manager import WebSocketManager # type: ignore
 from models.client_state import ClientCapability
 
@@ -44,26 +44,15 @@ class ToolDispatcher:
         dispatched_to_any_client = False
         send_tasks = []
 
-        # Find clients capable of executing the tool
-        # For simplicity, we assume generic 'TOOL_EXECUTION' for any hardware tool.
-        # In a more complex system, you might map tool_name to specific capabilities.
+        # Find clients capable of executing the tool.
         executing_clients = self.ws_manager.get_clients_with_capability(ClientCapability.TOOL_EXECUTION)
         if executing_clients:
             logger.debug(f"Tool '{tool_name}' can be executed by: {list(executing_clients.keys())}")
             for client_id, client in executing_clients.items():
-                # If hardware is the active controller, it should execute.
-                # Otherwise, other clients might visualize/simulate.
-                if client_id == self.ws_manager.active_controller_id:
-                    event_for_client = tool_call_event.model_copy(update={"suggested_action": "execute"})
-                    send_tasks.append(client.send_event(event_for_client))
-                    dispatched_to_any_client = True
-                    logger.debug(f"Sending '{tool_name}' to client {client_id} for EXECUTION.")
-                else:
-                    # Other capable clients might visualize or simulate if not active controller
-                    event_for_client = tool_call_event.model_copy(update={"suggested_action": "visualize"})
-                    send_tasks.append(client.send_event(event_for_client))
-                    dispatched_to_any_client = True
-                    logger.debug(f"Sending '{tool_name}' to client {client_id} for VISUALIZATION (not active).")
+                event_for_client = tool_call_event.model_copy(update={"suggested_action": "execute"})
+                send_tasks.append(client.send_event(event_for_client))
+                dispatched_to_any_client = True
+                logger.debug(f"Sending '{tool_name}' to client {client_id} for EXECUTION.")
         
         # Find clients capable of visualizing/simulating the tool (e.g., frontend)
         visualizing_clients = self.ws_manager.get_clients_with_capability(ClientCapability.TOOL_VISUALIZATION)
@@ -86,20 +75,23 @@ class ToolDispatcher:
 
 
         if send_tasks:
-            await asyncio.gather(*send_tasks, return_exceptions=True)
-            for task in send_tasks:
-                if task.exception():
-                    logger.error(f"Error sending tool call to client: {task.exception()}")
+            results = await asyncio.gather(*send_tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Error sending tool call to client: {result}")
         
         if not dispatched_to_any_client:
             logger.warning(f"No clients found with capabilities to handle tool call '{tool_name}' (ID: {tool_call_id}).")
             # If no client can handle, send an error response back to Gemini
-            await self.ws_manager.send_to_client(
-                self.ws_manager.active_controller_id, # Send to active controller for feedback if any
-                ErrorEvent(message=f"No client could handle tool call '{tool_name}'.")
-            )
+            frontend_client = self.ws_manager.get_preferred_frontend_client()
+            if frontend_client:
+                await self.ws_manager.send_to_client(
+                    frontend_client.client_id,
+                    ErrorEvent(message=f"No client could handle tool call '{tool_name}'.")
+                )
             # Send an explicit error response to Gemini
             # This is critical for Gemini to continue if a tool fails to execute
-            await self.ws_manager.gemini_session.tool_response_queue.put(
-                (tool_call_id, tool_name, {"result": "error", "message": f"No client capable of handling tool '{tool_name}'."})
-            )
+            if self.ws_manager.gemini_session_manager:
+                await self.ws_manager.gemini_session_manager.tool_response_queue.put(
+                    (tool_call_id, tool_name, {"result": "error", "message": f"No client capable of handling tool '{tool_name}'."})
+                )

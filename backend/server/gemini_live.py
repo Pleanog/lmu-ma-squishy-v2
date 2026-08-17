@@ -19,6 +19,15 @@ YELLOW = '\033[93m'
 RED = '\033[91m'
 RESET = "\033[0m"
 
+
+def _is_benign_live_abort(error: Exception) -> bool:
+    """Returns True for expected transient Live disconnects (policy 1008 aborted)."""
+    status_code = getattr(error, "status_code", None)
+    message = str(error).lower()
+    if status_code == 1008:
+        return True
+    return "1008" in message and "operation was aborted" in message
+
 class GeminiLive:
     """
     Handles the interaction with the Gemini Live API.
@@ -158,7 +167,7 @@ class GeminiLive:
                                     self._client_message_index = session_resumption_update.last_consumed_client_message_index
                                     self._last_sent_client_message_index = max(self._last_sent_client_message_index, self._client_message_index)
 
-                                logger.info(f"Session resumption update: new_handle='{self._current_session_handle}' resumable={session_resumption_update.resumable} last_consumed_client_message_index={self._client_message_index}")
+                                # logger.info(f"Session resumption update: new_handle='{self._current_session_handle}' resumable={session_resumption_update.resumable} last_consumed_client_message_index={self._client_message_index}")
                                 await event_queue.put({"type": "session_resumption_update", "handle": self._current_session_handle, "resumable": session_resumption_update.resumable, "last_consumed_client_message_index": self._client_message_index})
 
                             server_content = response.server_content
@@ -168,7 +177,7 @@ class GeminiLive:
                                 if server_content.model_turn:
                                     for part in server_content.model_turn.parts:
                                         if part.inline_data:
-                                            logger.info(GREY + f"Gemini audio chunk: {len(part.inline_data.data)} bytes" + RESET)
+                                            # logger.info(GREY + f"Gemini audio chunk: {len(part.inline_data.data)} bytes" + RESET)
                                             if inspect.iscoroutinefunction(audio_output_callback):
                                                 await audio_output_callback(part.inline_data.data)
                                             else:
@@ -228,8 +237,15 @@ class GeminiLive:
                 except asyncio.CancelledError:
                     logger.debug("receive_loop task cancelled")
                 except Exception as e:
-                    logger.error(f"receive_loop error: {type(e).__name__}: {e}\n{traceback.format_exc()}")
-                    await event_queue.put({"type": "error", "error": f"{type(e).__name__}: {e}"})
+                    if _is_benign_live_abort(e):
+                        logger.warning(
+                            "Gemini Live receive loop ended with policy 1008 'operation was aborted'. "
+                            "Treating as transient and reconnecting."
+                        )
+                        await event_queue.put({"type": "aborted", "reason": f"{type(e).__name__}: {e}"})
+                    else:
+                        logger.error(f"receive_loop error: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+                        await event_queue.put({"type": "error", "error": f"{type(e).__name__}: {e}"})
                 finally:
                     logger.info("receive_loop exiting")
                     await event_queue.put(None)
@@ -267,6 +283,12 @@ class GeminiLive:
                     if event.get("type") == "go_away":
                         logger.info(f"Gemini Live session explicitly asked to close. Attempting to reconnect in {reconnection_delay}s.")
                         break # Exit inner async for loop to trigger outer while loop for reconnect
+                    elif event.get("type") == "aborted":
+                        logger.info(
+                            "Gemini Live session aborted by remote side (1008). "
+                            f"Attempting to reconnect in {reconnection_delay}s."
+                        )
+                        break
                     elif event.get("type") == "error":
                         logger.error(f"Error within Gemini Live session: {event.get('error')}. Attempting to reconnect in {reconnection_delay}s.")
                         yield event # Propagate the error

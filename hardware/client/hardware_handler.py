@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from typing import Any, Callable, Optional
-from hardware.base_actuator import MotorActuator, SoundActuator
+from hardware.base_actuator import MotorActuator
 from hardware.led_actuator import LEDActuator
 from hardware.touch_sensor import TouchSensor
 from hardware.gyro_sensor import OrientationSensor
@@ -21,7 +21,6 @@ class HardwareHandler:
         self.actuators = {
             "set_led_color": LEDActuator("LED_Ring"),
             "vibrate": MotorActuator("Vibration_Motor"),
-            "play_sound_effect": SoundActuator("Sound_Effects"),
         }
         
         # Initialisiere die Sensoren
@@ -94,13 +93,13 @@ class HardwareHandler:
                     if not sensor_id or not event_type:
                         continue
 
-                    # await self._emit_sensor_event(
-                    #     sensor_id=str(sensor_id),
-                    #     event_type=str(event_type),
-                    #     value=value,
-                    #     intensity=intensity,
-                    #     source=sensor.name,
-                    # )
+                    await self._emit_sensor_event(
+                        sensor_id=str(sensor_id),
+                        event_type=str(event_type),
+                        value=value,
+                        intensity=intensity,
+                        source=sensor.name,
+                    )
 
                 await asyncio.sleep(0.5) # Prüfe 2x pro Sekunde
         except asyncio.CancelledError:

@@ -96,7 +96,7 @@ class PocketBaseInteractionLogger:
 
         payload = {
             "participant_id": cleaned_participant,
-            "username": (username or "").strip() or "Gast",
+            "username": (username or "").strip() or "Guest",
             "source_client_type": (source_client_type or "").strip() or "unknown",
             "interaction_type": (interaction_type or "").strip(),
             "content": (content or "").strip(),

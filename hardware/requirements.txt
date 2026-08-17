@@ -1,11 +1,7 @@
 RPi.GPIO
-numpy
 requests
 websockets
 pocketbase
 google-genai
 python-dotenv
 python-multipart
-pyaudio
-scipy
-sounddevice

@@ -55,60 +55,60 @@ from google.genai import types
 # These are the actual tool schemas that Gemini will use to understand available actions.
 
 squishy_tools = [
-    types.Tool(
-        function_declarations=[
-            types.FunctionDeclaration(
-                name="set_led_color",
-                description="Sets the color of Squishy's LED. Can be used to indicate emotion, state, or as a visual response.",
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={
-                        "color": types.Schema(
-                            type=types.Type.STRING,
-                            description="The color to set the LED. Common colors like 'red', 'green', 'blue', 'yellow', 'purple', 'white', 'off' are supported."
-                        )
-                    },
-                    required=["color"]
-                )
-            )
-        ]
-    ),
-    types.Tool(
-        function_declarations=[
-            types.FunctionDeclaration(
-                name="play_sound_effect",
-                description="Plays a specific sound through Squishy's speaker. Can be used for feedback, alerts, or expressive noises.",
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={
-                        "sound_type": types.Schema(
-                            type=types.Type.STRING,
-                            description="The type of sound to play. Examples: 'happy', 'error', 'notification', 'annoyed'."
-                        )
-                    },
-                    required=["sound_type"]
-                )
-            )
-        ]
-    ),
-    types.Tool(
-        function_declarations=[
-            types.FunctionDeclaration(
-                name="vibrate",
-                description="Activates Squishy's vibration motor. Can be used for tactile feedback or as a physical response.",
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={
-                        "pattern": types.Schema(
-                            type=types.Type.STRING,
-                            description="The vibration pattern. Examples: 'short_pulse', 'long_buzz', 'heartbeat', 'alert_vibrate'."
-                        )
-                    },
-                    required=["pattern"]
-                )
-            )
-        ]
-    ),
+    # types.Tool(
+    #     function_declarations=[
+    #         types.FunctionDeclaration(
+    #             name="set_led_color",
+    #             description="Sets the color of Squishy's LED. Can be used to indicate emotion, state, or as a visual response.",
+    #             parameters=types.Schema(
+    #                 type=types.Type.OBJECT,
+    #                 properties={
+    #                     "color": types.Schema(
+    #                         type=types.Type.STRING,
+    #                         description="The color to set the LED. Common colors like 'red', 'green', 'blue', 'yellow', 'purple', 'white', 'off' are supported."
+    #                     )
+    #                 },
+    #                 required=["color"]
+    #             )
+    #         )
+    #     ]
+    # ),
+    # types.Tool(
+    #     function_declarations=[
+    #         types.FunctionDeclaration(
+    #             name="play_sound_effect",
+    #             description="Plays a specific sound through Squishy's speaker. Can be used for feedback, alerts, or expressive noises.",
+    #             parameters=types.Schema(
+    #                 type=types.Type.OBJECT,
+    #                 properties={
+    #                     "sound_type": types.Schema(
+    #                         type=types.Type.STRING,
+    #                         description="The type of sound to play. Examples: 'happy', 'error', 'notification', 'annoyed'."
+    #                     )
+    #                 },
+    #                 required=["sound_type"]
+    #             )
+    #         )
+    #     ]
+    # ),
+    # types.Tool(
+    #     function_declarations=[
+    #         types.FunctionDeclaration(
+    #             name="vibrate",
+    #             description="Activates Squishy's vibration motor. Can be used for tactile feedback or as a physical response.",
+    #             parameters=types.Schema(
+    #                 type=types.Type.OBJECT,
+    #                 properties={
+    #                     "pattern": types.Schema(
+    #                         type=types.Type.STRING,
+    #                         description="The vibration pattern. Examples: 'short_pulse', 'long_buzz', 'heartbeat', 'alert_vibrate'."
+    #                     )
+    #                 },
+    #                 required=["pattern"]
+    #             )
+    #         )
+    #     ]
+    # ),
     types.Tool(
         function_declarations=[
             types.FunctionDeclaration(

@@ -9,8 +9,6 @@ import logging
 from datetime import datetime
 from typing import Callable, Any, Dict, Optional, List, Union
 
-from config import CLIENT_CAPABILITIES
-
 logger = logging.getLogger(__name__)
 
 # --- Typen für Backend-Nachrichten ---
@@ -22,13 +20,6 @@ class RegistrationAckEvent(IncomingBackendJsonEvent):
     type: Literal["registration_ack"]
     client_id: str
     message: str
-    active_controller_id: Optional[str]
-    current_active_controller_type: Optional[str]
-
-class ActiveControllerChangeEvent(IncomingBackendJsonEvent):
-    type: Literal["active_controller_change"]
-    new_active_controller_id: str
-    new_active_controller_type: str
 
 class AIResponseEvent(IncomingBackendJsonEvent):
     type: Literal["ai_response"]
@@ -62,7 +53,6 @@ class SystemCommandEvent(IncomingBackendJsonEvent):
 # Union-Typ für alle möglichen JSON-Events
 AllIncomingJsonEvents = Union[
     RegistrationAckEvent,
-    ActiveControllerChangeEvent,
     AIResponseEvent,
     TranscriptEvent,
     ToolCallEvent,
@@ -96,8 +86,6 @@ class WebSocketClient:
 
         self._websocket: Optional[websockets.WebSocketClientProtocol] = None
         self._client_id: Optional[str] = None
-        self._active_controller_id: Optional[str] = None
-        self._active_controller_type: Optional[str] = None
         self._is_connected = False
         self._listener_task: Optional[asyncio.Task] = None # Task für _listen_for_messages
 
@@ -113,16 +101,6 @@ class WebSocketClient:
     @property
     def client_id(self) -> Optional[str]:
         return self._client_id
-
-    @property
-    def active_controller_id(self) -> Optional[str]:
-        return self._active_controller_id
-
-    @property
-    def active_controller_type(self) -> Optional[str]:
-        return self._active_controller_type
-
-    # Entferne set_audio_sender, da send_audio_chunk direkt eine Methode des Clients ist
 
     def set_sensor_event_sender(self, callback: Callable[[str, str, Any, Optional[str]], Any]):
         """Setzt den Callback zum Senden von Sensor-Events an das Backend. Erwartet einen awaitable."""
@@ -185,8 +163,6 @@ class WebSocketClient:
             await self._websocket.close()
             self._is_connected = False
             self._client_id = None
-            self._active_controller_id = None
-            self._active_controller_type = None
             logger.info("WebSocket disconnected.")
 
     async def _register_client(self):
@@ -218,16 +194,7 @@ class WebSocketClient:
                         if parsed_data.get("type") == "registration_ack":
                             ack: RegistrationAckEvent = parsed_data
                             self._client_id = ack.get("client_id")
-                            self._active_controller_id = ack.get("active_controller_id")
-                            self._active_controller_type = ack.get("current_active_controller_type")
-                            logger.info(f"Registered as {self.client_type} with ID {self._client_id}. "
-                                        f"Active Controller: {self._active_controller_type} ({self._active_controller_id})")
-                        # Handle active_controller_change internally
-                        elif parsed_data.get("type") == "active_controller_change":
-                            change: ActiveControllerChangeEvent = parsed_data
-                            self._active_controller_id = change.get("new_active_controller_id")
-                            self._active_controller_type = change.get("new_active_controller_type")
-                            logger.info(f"Active controller changed to: {self._active_controller_type} ({self._active_controller_id})")
+                            logger.info(f"Registered as {self.client_type} with ID {self._client_id}.")
                         # Handle tool_call (for later)
                         elif parsed_data.get("type") == "tool_call":
                             tool_call: ToolCallEvent = parsed_data
@@ -298,34 +265,6 @@ class WebSocketClient:
         else:
             logger.warning("WebSocket not connected, cannot send JSON data.")
 
-    async def send_text_message(self, text: str):
-        """Sends a text message to the backend."""
-        message = {
-            "type": "text_message",
-            "timestamp": datetime.now().isoformat(),
-            "text": text
-        }
-        await self._send_json(message)
-
-    async def send_audio_chunk(self, audio_bytes: bytes):
-        """Sends raw audio bytes to the backend."""
-        if self._websocket and self._is_connected:
-            try:
-                await self._websocket.send(audio_bytes)
-                # logger.debug(f"Sending audio chunk of size {len(audio_bytes)} bytes.")
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("Tried to send audio on a closed WebSocket.")
-                self._is_connected = False
-            except Exception as e:
-                logger.error(f"Failed to send audio chunk: {e}", exc_info=True)
-                if self._on_error_callback:
-                    if asyncio.iscoroutinefunction(self._on_error_callback):
-                        await self._on_error_callback(e)
-                    else:
-                        self._on_error_callback(e)
-        else:
-            logger.debug("WebSocket not connected, cannot send audio chunk.") # Debug statt Warning, da oft normal wenn nicht aktiv
-
     async def send_sensor_event(self, sensor_id: str, event_type: str, value: Any, intensity: Optional[str] = None):
         """Sends a simulated sensor event to the backend."""
         message = {
@@ -337,15 +276,3 @@ class WebSocketClient:
             "intensity": intensity
         }
         await self._send_json(message)
-    
-    async def request_set_active_controller(self):
-        """Requests to become the active controller."""
-        if self._client_id:
-            message = {
-                "type": "set_active_controller",
-                "timestamp": datetime.now().isoformat(),
-                "client_id": self._client_id
-            }
-            await self._send_json(message)
-        else:
-            logger.warning("Client ID not set, cannot request active controller.")

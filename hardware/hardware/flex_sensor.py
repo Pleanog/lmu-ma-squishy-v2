@@ -39,7 +39,7 @@ class FlexSensor(BaseSensor):
         if state == "BENT":
             return {
                 "sensor_id": "gesture",
-                "event": "firm_press_head",
+                "event": "press_head",
                 "value": "flex_bent",
                 "intensity": None,
             }

@@ -1,64 +1,71 @@
 # FILE: app/websocket/router.py
 
 import logging
-from typing import Callable, Coroutine, Any, Dict, Optional
+from typing import Any, Dict, Optional
 
-from models.events import AudioInterruptEvent, ErrorEvent, IncomingEventType, IncomingEvent, SystemMessageEvent
-from websocket.manager import WebSocketManager
 from gemini.session import GeminiSessionManager
-from tools.dispatcher import ToolDispatcher
 from models.client_state import ClientCapability, ClientType
+from models.events import (
+    AudioInterruptEvent,
+    ErrorEvent,
+    IncomingEvent,
+    IncomingEventType,
+    SensorObservedEvent,
+    SystemCommandEvent,
+    SystemMessageEvent,
+)
+from tools.dispatcher import ToolDispatcher
+from websocket.manager import WebSocketManager
 
 logger = logging.getLogger(__name__)
 
-GREEN = '\033[92m'
-GREY = "\033[90m"
-ORANGE = "\033[93m"
-PURPLE = '\033[95m'
-CYAN = '\033[96m'
-DARKCYAN = '\033[36m'
-BLUE = '\033[94m'
-YELLOW = '\033[93m'
-RED = '\033[91m'
-RESET = "\033[0m"
 
 class MessageRouter:
     """
-    Routes incoming WebSocket events to the appropriate handlers.
-    This class orchestrates communication between WebSocket clients,
-    the Gemini session, and tool dispatchers.
+    Routes incoming WebSocket events to Gemini and tools.
+    Frontend handles text/audio conversation; hardware/frontend can both send sensor input.
     """
+
     def __init__(self, ws_manager: WebSocketManager, gemini_session: GeminiSessionManager, tool_dispatcher: ToolDispatcher):
         self.ws_manager = ws_manager
         self.gemini_session = gemini_session
         self.tool_dispatcher = tool_dispatcher
-        self.ws_manager.message_router = self.route_message # Inject this router into the manager
+        self.ws_manager.message_router = self.route_message
         logger.info("MessageRouter initialized.")
 
         self._gesture_system_injections: Dict[str, str] = {
-            "place_on_table": "[System-Sensorik] Geste 'place_on_table' erkannt. Fasse deine Antworten ab sofort deutlich kürzer und prägnanter zusammen.",
-            "multi_tap_head_open_hand": "[System-Sensorik] Geste 'multi_tap_head_open_hand' erkannt. Erkläre das aktuelle Thema ab sofort detaillierter und ausführlicher.",
-            "target_focus": "[System-Sensorik] Geste 'target_focus' erkannt. Fasse die letzte wichtige Information sehr knapp zusammen in wenigen Worten und bestätige, dass sie im lokalen Speicher des Browsers gespeichert wurde.",
-            "vertical_shake": "[System-Sensorik] Geste 'vertical_shake' erkannt. Der Nutzer möchte andere Optionen oder alternative Vorschläge zur letzten Antwort hören. Gib ihm diese jetzt.",
-            "squeeze_sides": "[System-Sensorik] Geste 'squeeze_sides' erkannt. Hilf dem Nutzer, seine letzte Frage oder seinen letzten Prompt zu optimieren, nimm die gestellte Frage und formuliere sie in einer präziseren, klareren und effektiveren Weise um gib sie dem Nutzer zurück, sage, dass du jetzt diesen neuen Promt beantworten wirst",
+            "drop_on_table": "[System Sensors] Please repeat what you just said more briefly.",
+            "tap_head": "[System Sensors] Gesture 'tap_head' detected. From now on, explain the current topic in more detail and more comprehensively.",
+            "target_focus": "[System Sensors] Gesture 'target_focus' detected. Summarize the last important piece of information very briefly in a few words and confirm that it has been saved in the browser's local storage.",
+            "shake": "[System Sensors] Gesture 'shake' detected. The user wants to hear other options or alternative suggestions to the last answer. Provide them now.",
+            "squeeze": "[System Sensors] Gesture 'squeeze' detected. Help the user optimize their last question or prompt; take the asked question and rephrase it in a more precise, clear, and effective way, give it back to the user, and state that you will now answer this new prompt."
+        }
+        self._gesture_aliases: Dict[str, str] = {
+            "activate": "press_head",
+            "hush_geste": "hush",
+            "hush_geste": "hush",
+            "place_on_table": "drop_on_table",
+        }
+        self._known_gestures = set(self._gesture_system_injections.keys()) | {
+            "press_head",
+            "hush",
+            "horizontal_turn",
         }
 
     def _can_send_sensor_events(self, client) -> bool:
-        if client.state.client_type == ClientType.HARDWARE:
-            return ClientCapability.SENSOR_INPUT in client.state.capabilities
-        if client.state.client_type == ClientType.FRONTEND:
-            return ClientCapability.SENSOR_SIMULATION in client.state.capabilities
-        return False
+        capabilities = client.state.capabilities
+        return (
+            ClientCapability.SENSOR_INPUT in capabilities
+            or ClientCapability.SENSOR_SIMULATION in capabilities
+        )
 
     def _is_system_sensorik_text(self, text: str) -> bool:
-        return text.strip().startswith("[System-Sensorik]")
+        return text.strip().startswith("[System Sensors]")
 
     def _is_save_trigger_text(self, text: str) -> bool:
         lowered = text.lower()
         return self._is_system_sensorik_text(text) and (
-            "target_focus" in lowered or
-            "r5_save" in lowered or
-            "save_memory" in lowered
+            "target_focus" in lowered or "r5_save" in lowered or "save_memory" in lowered
         )
 
     def _build_sensor_message(self, event, source_prefix: str) -> str:
@@ -71,6 +78,26 @@ class MessageRouter:
         if event.intensity:
             sensor_text += f" Intensity: {event.intensity}."
         return sensor_text
+
+    def _normalize_gesture_name(self, raw_event_name: Optional[str]) -> Optional[str]:
+        gesture_name = (raw_event_name or "").strip()
+        if not gesture_name:
+            return None
+        if gesture_name in self._known_gestures:
+            return gesture_name
+        return self._gesture_aliases.get(gesture_name)
+
+    async def _broadcast_sensor_observed(self, event, client, mapped_gesture: Optional[str] = None) -> None:
+        await self.ws_manager.broadcast(
+            SensorObservedEvent(
+                sensor_id=event.sensor_id,
+                event=event.event,
+                value=event.value,
+                intensity=event.intensity,
+                source_client_type=client.state.client_type if client.state else None,
+                mapped_gesture=mapped_gesture,
+            )
+        )
 
     async def _log_client_interaction(
         self,
@@ -93,36 +120,23 @@ class MessageRouter:
             metadata=metadata,
         )
 
-    def _get_preferred_audio_controller_id(self, fallback_client_id: str) -> Optional[str]:
-        for candidate_id, candidate in self.ws_manager.active_clients.items():
-            if candidate.state and candidate.state.client_type == ClientType.HARDWARE and candidate.state.capabilities.intersection(
-                {ClientCapability.AUDIO_INPUT, ClientCapability.TEXT_INPUT}
-            ):
-                return candidate_id
-
-        fallback_client = self.ws_manager.get_client(fallback_client_id)
-        if fallback_client and fallback_client.state and fallback_client.state.capabilities.intersection(
-            {ClientCapability.AUDIO_INPUT, ClientCapability.TEXT_INPUT}
-        ):
-            return fallback_client_id
-
-        return self.ws_manager.active_controller_id
-
     async def _handle_gesture_event(self, event, client) -> bool:
-        if event.sensor_id != "gesture":
-            return False
-
         if not self._can_send_sensor_events(client):
-            logger.warning(f"Client {client.client_id} attempted gesture routing without sensor capability.")
             await client.send_event(ErrorEvent(message="Client lacks capability to send gesture events."))
             return False
 
-        gesture_name = (event.event or "").strip()
+        raw_gesture_name = (event.event or "").strip()
+
+        print(f"\033[94mReceived gesture: '{raw_gesture_name}' from client {client.client_id if client else 'unknown'}\033[0m")
+
+        gesture_name = self._normalize_gesture_name(raw_gesture_name)
         if not gesture_name:
-            await client.send_event(ErrorEvent(message="Gesture sensor events require an 'event' name."))
+            if not raw_gesture_name:
+                await client.send_event(ErrorEvent(message="Gesture sensor events require an 'event' name."))
+            else:
+                await client.send_event(ErrorEvent(message=f"Unknown gesture event: {raw_gesture_name}"))
             return False
 
-        logger.info(f"Routing gesture '{gesture_name}' from {client.state.client_type} client {client.client_id}.")
         await self._log_client_interaction(
             client,
             interaction_type="gesture_event",
@@ -130,17 +144,19 @@ class MessageRouter:
             metadata={"sensor_id": event.sensor_id},
         )
 
-        if gesture_name == "firm_press_head":
-            preferred_controller_id = self._get_preferred_audio_controller_id(client.client_id)
-            if preferred_controller_id:
-                await self.ws_manager.set_active_controller(preferred_controller_id)
-            return True
-
-        if gesture_name == "hush_gesture":
+        if gesture_name == "hush":
+            await self.ws_manager.broadcast(AudioInterruptEvent(message="AI audio interrupted by gesture."))
             await self.ws_manager.broadcast(
-                AudioInterruptEvent(message="AI audio interrupted by gesture.")
+                SystemCommandEvent(command="set_microphone_state", target="frontend", payload={"enabled": False})
             )
             await self.gemini_session.interrupt_session()
+            return False
+
+        if gesture_name == "press_head":
+            await self.gemini_session.reset_session()
+            await self.ws_manager.broadcast(
+                SystemCommandEvent(command="set_microphone_state", target="frontend", payload={"enabled": True})
+            )
             return False
 
         if gesture_name == "horizontal_turn":
@@ -169,214 +185,115 @@ class MessageRouter:
         return False
 
     async def route_message(self, event: IncomingEventType, client_id: str):
-        """
-        Main routing logic for incoming events from WebSocket clients.
-        """
         client = self.ws_manager.get_client(client_id)
         if not client or not client.state:
-            logger.warning(f"Event from unknown or unregistered client {client_id}. Dropping.")
+            logger.warning("Event from unknown or unregistered client %s. Dropping.", client_id)
             return
-
-        is_active_controller = (client_id == self.ws_manager.active_controller_id)
-        routing = self.ws_manager.get_routing_config()
 
         should_start_session = False
 
-        if isinstance(event, IncomingEvent.SENSOR_EVENT.model) and event.sensor_id == "gesture":
-            should_start_session = await self._handle_gesture_event(event, client)
-            if should_start_session and not self.gemini_session.is_session_active:
-                await self.gemini_session.start_session()
-            return
+        if isinstance(event, IncomingEvent.SENSOR_EVENT.model):
+            mapped_gesture = self._normalize_gesture_name(event.event)
+            await self._broadcast_sensor_observed(event, client, mapped_gesture=mapped_gesture)
 
-        # --- Handle Active Controller Input ---
-        if is_active_controller:
-            if isinstance(event, IncomingEvent.AUDIO_CHUNK.model):
-                if ClientCapability.AUDIO_INPUT in client.state.capabilities:
-                    if client.state.client_type == ClientType.HARDWARE and not routing.get("hardware_mic_enabled", True):
-                        await client.send_event(SystemMessageEvent(message="Hardware mic routing is disabled. Audio input ignored."))
-                        return
-                    should_start_session = True
-                    self.ws_manager.note_input_route(client_id, "audio")
-                    await self.gemini_session.audio_input_queue.put(event.data)
-                    logger.debug(f"Client {client_id} (active controller) sent audio chunk.")
-                else:
-                    logger.warning(f"Active controller {client_id} lacks AUDIO_INPUT capability.")
-            elif isinstance(event, IncomingEvent.TEXT_MESSAGE.model):
-                if self._is_save_trigger_text(event.text):
-                    await self._log_client_interaction(
-                        client,
-                        interaction_type="save_trigger_text",
-                        content=event.text,
-                    )
-                    save_result = await self.gemini_session.save_latest_response_as_memory(
-                        source="hardware_system_sensorik",
-                        trigger_event="target_focus_text",
-                    )
-                    status_message = (
-                        f"Memory saved ({save_result.get('memory_id')})"
-                        if save_result.get("status") == "saved"
-                        else f"Memory save failed: {save_result.get('message')}"
-                    )
-                    await client.send_event(SystemMessageEvent(message=status_message))
-                    return
-                if ClientCapability.TEXT_INPUT in client.state.capabilities:
-                    if (
-                        client.state.client_type == ClientType.FRONTEND
-                        and not self._is_system_sensorik_text(event.text)
-                        and not routing.get("ui_text_mode_enabled", True)
-                    ):
-                        await client.send_event(SystemMessageEvent(message="UI text mode is disabled. Text input ignored."))
-                        return
-                    should_start_session = True
-                    self.ws_manager.note_input_route(client_id, "text")
-                    await self.gemini_session.text_input_queue.put(event.text)
-                    await self._log_client_interaction(
-                        client,
-                        interaction_type="text_input",
-                        content=event.text,
-                    )
-                    logger.debug(f"Client {client_id} (active controller) sent text message.")
-                else:
-                    logger.warning(f"Active controller {client_id} lacks TEXT_INPUT capability.")
-            elif isinstance(event, IncomingEvent.IMAGE_CHUNK.model):
-                # Always allow image input, active controller or not, if Gemini supports it
-                should_start_session = True
-                await self.gemini_session.video_input_queue.put(event.data)
-                logger.debug(f"Client {client_id} sent image chunk.")
-            elif isinstance(event, IncomingEvent.SENSOR_EVENT.model):
-                if client.state.client_type == ClientType.HARDWARE and ClientCapability.SENSOR_INPUT in client.state.capabilities:
-                    # Translate sensor event to natural language for Gemini
-                    should_start_session = True
-                    self.ws_manager.note_input_route(client_id, "sensor")
-                    sensor_text = self._build_sensor_message(event, "System")
-                    await self.gemini_session.text_input_queue.put(sensor_text)
-                    await self._log_client_interaction(
-                        client,
-                        interaction_type="sensor_input",
-                        content=sensor_text,
-                        metadata={"sensor_id": event.sensor_id, "event": event.event, "intensity": event.intensity},
-                    )
-                    logger.info(f"Hardware client {client_id} (active controller) sent sensor event: {event.sensor_id}")
-                elif client.state.client_type == ClientType.FRONTEND and ClientCapability.SENSOR_SIMULATION in client.state.capabilities:
-                    # Frontend simulates sensor event
-                    should_start_session = True
-                    self.ws_manager.note_input_route(client_id, "sensor")
-                    simulated_sensor_text = self._build_sensor_message(event, "System (simulated)")
-                    await self.gemini_session.text_input_queue.put(simulated_sensor_text)
-                    await self._log_client_interaction(
-                        client,
-                        interaction_type="sensor_simulation",
-                        content=simulated_sensor_text,
-                        metadata={"sensor_id": event.sensor_id, "event": event.event, "intensity": event.intensity},
-                    )
-                    logger.info(f"Frontend client {client_id} (active controller, simulating) sent sensor event: {event.sensor_id}")
-                else:
-                    logger.warning(f"Client {client_id} sent sensor event but lacks capability or is not active controller for this input.")
-            elif isinstance(event, IncomingEvent.TOOL_RESPONSE.model):
-                # Tool responses are always handled by GeminiSessionManager
-                await self.gemini_session.tool_response_queue.put((event.tool_call_id, event.tool_name, event.result))
+            if mapped_gesture:
+                event.event = mapped_gesture
+                should_start_session = await self._handle_gesture_event(event, client)
+                if should_start_session and not self.gemini_session.is_session_active:
+                    await self.gemini_session.start_session()
+                return
+
+        if isinstance(event, IncomingEvent.AUDIO_CHUNK.model):
+            if client.state.client_type != ClientType.FRONTEND or ClientCapability.AUDIO_INPUT not in client.state.capabilities:
+                await client.send_event(ErrorEvent(message="Only frontend clients may send audio input."))
+                return
+            should_start_session = True
+            self.gemini_session.set_response_mode_for_audio_input()
+            await self.gemini_session.audio_input_queue.put(event.data)
+            return await self._start_session_if_needed(should_start_session)
+
+        if isinstance(event, IncomingEvent.TEXT_MESSAGE.model):
+            if client.state.client_type != ClientType.FRONTEND or ClientCapability.TEXT_INPUT not in client.state.capabilities:
+                await client.send_event(ErrorEvent(message="Only frontend clients may send text input."))
+                return
+
+            if self._is_save_trigger_text(event.text):
                 await self._log_client_interaction(
                     client,
-                    interaction_type="tool_response",
-                    content=event.tool_name,
-                    metadata={"tool_call_id": event.tool_call_id, "result": event.result},
+                    interaction_type="save_trigger_text",
+                    content=event.text,
                 )
-                logger.debug(f"Client {client_id} sent tool response for {event.tool_name}/{event.tool_call_id}.")
-            else:
-                logger.warning(f"Client {client_id} (active controller) sent unhandled event type: {event.type}")
-        else:
-            # --- Handle Observer/Debugger Input (Non-Active Controller) ---
-            # These clients can send some events, but not primary conversation inputs
-            if isinstance(event, IncomingEvent.SENSOR_EVENT.model):
-                # Observers can send sensor events, but it's treated as a simulation/debug input
-                if client.state.client_type == ClientType.FRONTEND and ClientCapability.SENSOR_SIMULATION in client.state.capabilities:
-                   should_start_session = True
-                   self.ws_manager.note_input_route(client_id, "sensor")
-                   simulated_sensor_text = self._build_sensor_message(event, f"System (simulated by observer {client.client_id})")
-                   await self.gemini_session.text_input_queue.put(simulated_sensor_text)
-                   await self._log_client_interaction(
-                       client,
-                       interaction_type="sensor_simulation_observer",
-                       content=simulated_sensor_text,
-                       metadata={"sensor_id": event.sensor_id, "event": event.event, "intensity": event.intensity},
-                   )
-                   logger.info(f"Frontend client {client_id} (observer, simulating) sent sensor event: {event.sensor_id}")
-                elif client.state.client_type == ClientType.HARDWARE and ClientCapability.SENSOR_INPUT in client.state.capabilities:
-                   should_start_session = True
-                   self.ws_manager.note_input_route(client_id, "sensor")
-                   sensor_text = self._build_sensor_message(event, f"System (hardware observer {client.client_id})")
-                   await self.gemini_session.text_input_queue.put(sensor_text)
-                   await self._log_client_interaction(
-                       client,
-                       interaction_type="sensor_input_observer",
-                       content=sensor_text,
-                       metadata={"sensor_id": event.sensor_id, "event": event.event, "intensity": event.intensity},
-                   )
-                   logger.info(f"Hardware client {client_id} (observer) sent sensor event: {event.sensor_id}")
-                else:
-                   logger.warning(f"Client {client_id} (observer) sent sensor event but lacks simulation capability.")
-            elif isinstance(event, IncomingEvent.TEXT_MESSAGE.model):
-                if self._is_save_trigger_text(event.text):
-                   await self._log_client_interaction(
-                       client,
-                       interaction_type="save_trigger_text_observer",
-                       content=event.text,
-                   )
-                   save_result = await self.gemini_session.save_latest_response_as_memory(
-                       source=f"{client.state.client_type}_observer_system_sensorik",
-                       trigger_event="target_focus_text",
-                   )
-                   status_message = (
-                       f"Memory saved ({save_result.get('memory_id')})"
-                       if save_result.get("status") == "saved"
-                       else f"Memory save failed: {save_result.get('message')}"
-                   )
-                   await client.send_event(SystemMessageEvent(message=status_message))
-                   return
-                if self._is_system_sensorik_text(event.text):
-                   should_start_session = True
-                   self.ws_manager.note_input_route(client_id, "text")
-                   await self.gemini_session.text_input_queue.put(event.text)
-                   await self._log_client_interaction(
-                       client,
-                       interaction_type="system_sensorik_text",
-                       content=event.text,
-                   )
-                   logger.info(f"Forwarded out-of-band sensor text from {client.state.client_type} client {client_id}.")
-                else:
-                   if client.state.client_type == ClientType.FRONTEND and not routing.get("ui_text_mode_enabled", True):
-                       await client.send_event(SystemMessageEvent(message="UI text mode is disabled. Text input ignored."))
-                       return
-                   # Non-active clients can send text messages, but they are treated as system/debug inputs for Gemini
-                   # This prevents observers from directly conversing with Gemini
-                   should_start_session = True
-                   self.ws_manager.note_input_route(client_id, "text")
-                   system_text = f"System (from {client.state.client_type} observer {client.client_id}): {event.text}"
-                   await self.gemini_session.text_input_queue.put(system_text)
-                   await self._log_client_interaction(
-                       client,
-                       interaction_type="observer_text_input",
-                       content=event.text,
-                   )
-                   logger.info(f"Observer client {client_id} sent text message as system input.")
-            elif isinstance(event, IncomingEvent.IMAGE_CHUNK.model):
-                # Always allow image input, active controller or not, if Gemini supports it
-                should_start_session = True
-                await self.gemini_session.video_input_queue.put(event.data)
-                logger.debug(f"Client {client_id} sent image chunk.")
-            elif isinstance(event, IncomingEvent.TOOL_RESPONSE.model):
-                # Tool responses are always handled by GeminiSessionManager, regardless of active controller
-                await self.gemini_session.tool_response_queue.put((event.tool_call_id, event.tool_name, event.result))
-                await self._log_client_interaction(
-                   client,
-                   interaction_type="tool_response_observer",
-                   content=event.tool_name,
-                   metadata={"tool_call_id": event.tool_call_id, "result": event.result},
+                save_result = await self.gemini_session.save_latest_response_as_memory(
+                    source="frontend_system_sensorik",
+                    trigger_event="target_focus_text",
                 )
-                logger.debug(f"Client {client_id} sent tool response for {event.tool_name}/{event.tool_call_id}.")
-            else:
-                logger.warning(f"Client {client_id} (observer) sent unhandled event type: {event.type}. Ignoring.")
-                await client.send_event(ErrorEvent(message="You are not the active controller. Input ignored or treated as system message."))
+                status_message = (
+                    f"Memory saved ({save_result.get('memory_id')})"
+                    if save_result.get("status") == "saved"
+                    else f"Memory save failed: {save_result.get('message')}"
+                )
+                await client.send_event(SystemMessageEvent(message=status_message))
+                return
 
+            should_start_session = True
+            self.gemini_session.set_response_mode_for_text_input()
+            await self.gemini_session.text_input_queue.put(event.text)
+            await self._log_client_interaction(
+                client,
+                interaction_type="text_input",
+                content=event.text,
+            )
+            return await self._start_session_if_needed(should_start_session)
+
+        if isinstance(event, IncomingEvent.IMAGE_CHUNK.model):
+            if client.state.client_type != ClientType.FRONTEND:
+                await client.send_event(ErrorEvent(message="Only frontend clients may send image input."))
+                return
+            should_start_session = True
+            await self.gemini_session.video_input_queue.put(event.data)
+            return await self._start_session_if_needed(should_start_session)
+
+        if isinstance(event, IncomingEvent.SENSOR_EVENT.model):
+            if not self._can_send_sensor_events(client):
+                await client.send_event(ErrorEvent(message="Client lacks capability to send sensor events."))
+                return
+
+            should_start_session = True
+            source_prefix = (
+                "System (simulated)"
+                if ClientCapability.SENSOR_SIMULATION in client.state.capabilities
+                else "System"
+            )
+            sensor_text = self._build_sensor_message(event, source_prefix)
+            await self.gemini_session.text_input_queue.put(sensor_text)
+            await self._log_client_interaction(
+                client,
+                interaction_type=(
+                    "sensor_simulation"
+                    if ClientCapability.SENSOR_SIMULATION in client.state.capabilities
+                    else "sensor_input"
+                ),
+                content=sensor_text,
+                metadata={"sensor_id": event.sensor_id, "event": event.event, "intensity": event.intensity},
+            )
+            return await self._start_session_if_needed(should_start_session)
+
+        if isinstance(event, IncomingEvent.TOOL_RESPONSE.model):
+            await self.gemini_session.tool_response_queue.put((event.tool_call_id, event.tool_name, event.result))
+            await self._log_client_interaction(
+                client,
+                interaction_type="tool_response",
+                content=event.tool_name,
+                metadata={"tool_call_id": event.tool_call_id, "result": event.result},
+            )
+            return
+
+        if isinstance(event, IncomingEvent.KEEPALIVE.model):
+            logger.debug("Keepalive received from client %s.", client_id)
+            return
+
+        await client.send_event(ErrorEvent(message=f"Unhandled event type: {event.type}"))
+
+    async def _start_session_if_needed(self, should_start_session: bool):
         if should_start_session and not self.gemini_session.is_session_active:
             await self.gemini_session.start_session()

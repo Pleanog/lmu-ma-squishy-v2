@@ -8,3 +8,7 @@ ENV/
 **/*.db
 
 **/*.env
+
+# Local TLS certificates (dev only, never commit private keys)
+backend/server/certs/
+frontend/certs/

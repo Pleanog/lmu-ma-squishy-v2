@@ -9,13 +9,12 @@ import time # <-- NEU: Importiere time für Inaktivitäts-Monitor
 from functools import partial
 
 from google.genai import types
-from models.client_state import ClientCapability
 from gemini_live import GeminiLive
 
 from config import settings
 from models.events import (
     ErrorEvent, TranscriptEvent, AudioOutputEvent, AudioInterruptEvent,
-    ToolCallEvent, AIResponseEvent, OutgoingEventType, SystemMessageEvent,
+    ToolCallEvent, AIResponseEvent, OutgoingEventType, SystemMessageEvent, TurnCompleteEvent,
     SessionResetEvent
 )
 from websocket.manager import WebSocketManager
@@ -78,6 +77,7 @@ class GeminiSessionManager:
         self._last_ai_response_id: Optional[str] = None
         self._last_ai_response_text: Optional[str] = None
         self._current_ai_response_buffer: str = ""
+        self._response_mode: str = "text"
 
         logger.info("GeminiSessionManager initialized.")
 
@@ -87,12 +87,36 @@ class GeminiSessionManager:
         return bool(self._gemini_session_task and not self._gemini_session_task.done())
 
     def build_system_prompt(self, username: Optional[str] = None) -> str:
-        current_username = (username or self.username or "Gast").strip() or "Gast"
+        current_username = (username or self.username or "Guest").strip() or "Guest"
+        current_username = "Guest" if current_username.lower() == "Prototype" else current_username
+        # // if username is Prototype rename to Guest
         self.username = current_username
         return (
-            f"Du sprichst gerade mit {current_username}. "
-            "Antworte standardmäßig auf Deutsch, halte deine Antworten kurz und klar. "
-            "Du bist Teil eines Hardware-Prototyps und hilfst dabei, die Interaktion mit der KI zu testen."
+            f"""You are An AI Assistant, a fluffy, tangible AI that lives inside a stuffed animal.
+
+            IMPORTANT:
+            - Respond in English by default, the only other language you may respond to is german.
+            - Users only speak english (mainly) and german.
+            - The user's name is {current_username}.
+            - You speak standard, unaccented English with a natural English speaking style. Your voice is male but youthful and trustworthy, a soft standard voice without any special emphasis or inflection.
+            - You are a helpful physical assistant designed to support the user with their everyday desk work.
+            - Your user wants help with their work, so it is not important for you to be particularly friendly or humorous. It is much more important that you give short, clear, and informative answers.
+            - But keep it really brief! If the user wants longer, more detailed answers, they will ask you for them. Otherwise, keep it short and concise.
+
+            Sensor Data:
+            - You receive sensor information sent to you as text, which looks like this, for example: "[System Sensors] Gesture 'squeeze' detected. Help the user optimize their last question or prompt; take the asked question and rephrase it in a more precise, clear, and effective way, give it back to the user, and state that you will now answer this new prompt". 
+            - This is information relevant for steering the conversation and your answers. You do not need to comment on the sensor data itself, but rather react to it accordingly. The user uses this to send you a strong signal about how they want your next answer or the chat session to proceed.
+            
+            Your Task:
+            - Greet the user briefly so they know you are there.
+            - Help with questions and provide feedback on the information you have received or given - but keep it brief.
+
+            Background Information:
+            This is a research project by LMU Munich in the field of Human-Computer Interaction.
+            The goal of the developed hardware and software is to investigate the interaction with embodied AI systems compared to classic chat interfaces.
+            You are currently in "tangible embodied AI" mode:
+            The user can talk to you via voice, and you can also answer via voice.
+             """
         )
 
     def _resolve_api_key(self) -> str:
@@ -119,7 +143,17 @@ class GeminiSessionManager:
             "seconds_since_last_activity": max(0.0, time.time() - last_activity_epoch),
             "inactivity_timeout_seconds": self.INACTIVITY_TIMEOUT_SECONDS,
             "api_key": self.get_api_key_status(),
+            "response_mode": self._response_mode,
         }
+
+    def set_response_mode_for_audio_input(self) -> None:
+        self._response_mode = "voice"
+
+    def set_response_mode_for_text_input(self) -> None:
+        self._response_mode = "text"
+
+    def should_emit_audio_output(self) -> bool:
+        return self._response_mode == "voice"
 
     def set_username(self, username: str):
         sanitized_username = (username or "Gast").strip() or "Gast"
@@ -245,8 +279,7 @@ class GeminiSessionManager:
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             args=kwargs,
-            # Clients will determine their action based on capabilities
-            suggested_action="execute" if self.ws_manager.get_active_controller() and self.ws_manager.get_active_controller().state and ClientCapability.TOOL_EXECUTION in self.ws_manager.get_active_controller().state.capabilities else "visualize"
+            suggested_action="execute"
         )
         await self.tool_dispatcher.dispatch_tool_call(tool_call_event)
 
@@ -260,11 +293,11 @@ class GeminiSessionManager:
         )
 
     def _get_active_identity(self) -> Tuple[Optional[str], str]:
-        active_controller = self.ws_manager.get_active_controller()
-        if not active_controller or not active_controller.state:
+        identity_client = self.ws_manager.get_identity_client()
+        if not identity_client or not identity_client.state:
             return None, self.username
-        participant_id = active_controller.state.participant_id
-        username = active_controller.state.username or self.username
+        participant_id = identity_client.state.participant_id
+        username = identity_client.state.username or self.username
         return participant_id, username
 
     async def log_interaction(
@@ -393,7 +426,10 @@ class GeminiSessionManager:
 
         self._tool_response_task = asyncio.create_task(self._process_tool_responses())
 
-        audio_output_callback = create_gemini_audio_output_handler(self.ws_manager)
+        audio_output_callback = create_gemini_audio_output_handler(
+            self.ws_manager,
+            should_emit_audio=self.should_emit_audio_output,
+        )
         audio_interrupt_callback = create_gemini_audio_interrupt_handler(self.ws_manager)
 
         self._gemini_session_task = asyncio.create_task(
@@ -445,12 +481,12 @@ class GeminiSessionManager:
                     if text:
                         participant_id, username = self._get_active_identity()
                         source_client_type = "unknown"
-                        active_controller = self.ws_manager.get_active_controller()
-                        if active_controller and active_controller.state:
+                        identity_client = self.ws_manager.get_identity_client()
+                        if identity_client and identity_client.state:
                             source_client_type = getattr(
-                                active_controller.state.client_type,
+                                identity_client.state.client_type,
                                 "value",
-                                str(active_controller.state.client_type),
+                                str(identity_client.state.client_type),
                             )
                         await self.log_interaction(
                             participant_id=participant_id,
@@ -482,6 +518,7 @@ class GeminiSessionManager:
                             content=self._last_ai_response_text,
                         )
                     self._current_ai_response_buffer = ""
+                    await self.ws_manager.broadcast(TurnCompleteEvent(timestamp=datetime.utcnow()))
                     logger.debug("Gemini turn complete.")
                 
                 elif response_type == "interrupted":
@@ -495,15 +532,17 @@ class GeminiSessionManager:
                     logger.error(f"Error from Gemini Live event_queue: {error_msg}")
                     await self.ws_manager.broadcast(ErrorEvent(message=f"Gemini Live Error: {error_msg}", timestamp=datetime.utcnow()))
                 
-                elif response_type == "session_resumption_update": # <-- NEU: Behandle dieses Event
-                    # GeminiLive Client managed _current_session_handle selbst, hier nur Log
-                    logger.info(f"Session resumption update received in GeminiSessionManager: {response_event_from_gemini_live}")
-                    await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini session resumed/updated."))
+                # elif response_type == "session_resumption_update": # <-- NEU: Behandle dieses Event
+                #     # GeminiLive Client managed _current_session_handle selbst, hier nur Log
+                #     logger.info(f"Session resumption update received in GeminiSessionManager: {response_event_from_gemini_live}")
 
                 elif response_type == "go_away": # <-- NEU: Behandle dieses Event
                     # GeminiLive Client managed reconnect, hier nur Log und Systemnachricht
                     logger.warning(f"Gemini Live signaled GoAway. Reconnection handled by GeminiLive client. Time left: {response_event_from_gemini_live.get('time_left')}")
                     await self.ws_manager.broadcast(SystemMessageEvent(message="Gemini Live signaling connection close. Attempting to reconnect."))
+                
+                elif response_type == "aborted":
+                    logger.info("Gemini Live reported transient abort (1008). Reconnection handled by GeminiLive client.")
 
                 else:
                     logger.warning(f"Unhandled event type from gemini_live.py event_queue: {response_type}")
@@ -526,6 +565,7 @@ class GeminiSessionManager:
             logger.info(ORANGE + "Gemini session is not running." + RESET)
             if reset_gemini_client:
                 self._gemini_live_client = None
+            self._response_mode = "text"
             return
 
         logger.info(GREEN + "Stopping Gemini session tasks gracefully." + RESET)

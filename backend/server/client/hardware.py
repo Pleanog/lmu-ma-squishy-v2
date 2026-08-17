@@ -55,24 +55,12 @@ async def connect_to_backend():
             "type": "register",
             "client_type": "hardware",
             "capabilities": [
-                "audio_input",
-                "audio_output",
-                "text_output",
                 "tool_execution",
                 "sensor_input",
                 "led_control",
                 "vibration_control",
-                "sound_playback"
             ]
         }))
-
-        async def send_audio_chunks():
-            # Simulate sending audio from ReSpeaker
-            while True:
-                # In a real scenario, read from microphone
-                dummy_audio = b'\\x00' * 1600 # 1600 bytes of silence for 16kHz, 16-bit mono
-                await websocket.send(dummy_audio)
-                await asyncio.sleep(0.1) # Send every 100ms
 
         async def send_sensor_events():
             # Simulate sending sensor data
@@ -123,20 +111,10 @@ async def connect_to_backend():
                                 }))
                         else:
                             logging.info(f"Hardware client received tool call '{tool_name}' but not suggested for execution.")
-                    elif data.get("type") == "audio_output":
-                        # Handle playing audio from backend
-                        logging.info(f"Received audio output from backend (length: {len(message)} bytes).")
-                        # You would play this audio through your RPi speaker
                 except json.JSONDecodeError:
-                    # Raw audio bytes from AI speech output
-                    if isinstance(message, bytes):
-                        logging.debug(f"Received raw audio bytes (length: {len(message)})")
-                        # Play this audio through RPi speaker
-                    else:
-                        logging.warning(f"Received non-JSON, non-bytes message: {message}")
+                    logging.warning(f"Received non-JSON message: {message}")
 
         await asyncio.gather(
-            send_audio_chunks(),
             send_sensor_events(),
             receive_messages()
         )

@@ -137,7 +137,7 @@ class TouchSensor(BaseSensor):
         if state_str == "BOTH_SIDES_TOUCH":
             return {
                 "sensor_id": "touch",
-                "event": "squeeze_sides",
+                "event": "squeeze",
                 "value": "both_sides_touch",
                 "intensity": None,
             }
@@ -164,7 +164,7 @@ class TouchSensor(BaseSensor):
                 self._last_head_tap_ts = 0.0
                 return {
                     "sensor_id": "touch",
-                    "event": "multi_tap_head_open_hand",
+                    "event": "tap_head",
                     "value": "head_double_tap",
                     "intensity": None,
                 }
@@ -173,7 +173,7 @@ class TouchSensor(BaseSensor):
 
         return {
             "sensor_id": "touch",
-            "event": "firm_press_head",
+            "event": "press_head",
             "value": f"pin={pin}",
             "intensity": None,
         }

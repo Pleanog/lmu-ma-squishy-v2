@@ -80,24 +80,24 @@ Goal: Both Frontend and Hardware can be active simultaneously without clashing.
 
           {
             code: 'R1_Activate',
-            backendEvent: 'firm_press_head',
+            backendEvent: 'press_head',
             is when the touch sensor registers that it was touched or when the squish sensor senses that it was deformed
           },
           {
             code: 'R2_Stop',
-            backendEvent: 'hush_gesture',
+            backendEvent: 'hush',
             is when the fron / face of the touch sensing area is touched
           },
           {
             code: 'R3_Concise',
             name: 'Concise',
-            backendEvent: 'place_on_table',
+            backendEvent: 'drop_on_table',
             is when the hardware is picked up and placed back on the table, so the gyro sensor needs to detect this up and down movement
             },
           {
             code: 'R4_Elaborate',
             name: 'Elaborate',
-            backendEvent: 'multi_tap_head_open_hand',
+            backendEvent: 'tap_head',
             when the user taps twice on the touch sensor on the head
           },
           {
@@ -115,13 +115,13 @@ Goal: Both Frontend and Hardware can be active simultaneously without clashing.
           {
             code: 'R7_Options',
             name: 'Options',
-            backendEvent: 'vertical_shake',
+            backendEvent: 'shake',
             gyrosensor detects shaking vertically or horizontally
           },
           {
             code: 'R8_Optimize',
             name: 'Optimize',
-            backendEvent: 'squeeze_sides',
+            backendEvent: 'squeeze',
             we do not detect squising but just when the touch sensor detects that both lef and right side are touched at the same time
           },
 

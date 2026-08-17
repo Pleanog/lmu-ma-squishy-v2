@@ -60,6 +60,10 @@ class RoutingConfigUpdateEvent(BaseEvent):
     hardware_speaker_enabled: Optional[bool] = None
     ui_text_mode_enabled: Optional[bool] = None
 
+class KeepAliveEvent(BaseEvent):
+    type: str = "keepalive"
+    source: Optional[str] = None
+
 # Union of all possible incoming event types
 IncomingEventType = Union[
     RegisterEvent,
@@ -70,6 +74,7 @@ IncomingEventType = Union[
     SetActiveControllerEvent,
     ImageChunkEvent,
     RoutingConfigUpdateEvent,
+    KeepAliveEvent,
 ]
 
 # --- Outgoing Events (from Server to Clients) ---
@@ -105,6 +110,15 @@ class AudioInterruptEvent(BaseEvent):
     type: str = "audio_interrupt"
     message: str = "AI audio interrupted."
 
+class SensorObservedEvent(BaseEvent):
+    type: str = "sensor_event_observed"
+    sensor_id: str
+    event: Optional[str] = None
+    value: Optional[Any] = None
+    intensity: Optional[str] = None
+    source_client_type: Optional[ClientType] = None
+    mapped_gesture: Optional[str] = None
+
 class ToolCallEvent(BaseEvent):
     type: str = "tool_call"
     tool_call_id: str
@@ -130,6 +144,9 @@ class SessionResetEvent(BaseEvent):
     type: str = "session_reset"
     message: str = "Gemini session reset."
 
+class TurnCompleteEvent(BaseEvent):
+    type: str = "turn_complete"
+
 class SystemCommandEvent(BaseEvent):
     type: str = "system_command"
     command: str
@@ -143,11 +160,13 @@ OutgoingEventType = Union[
     TranscriptEvent,
     AudioOutputEvent,
     AudioInterruptEvent,
+    SensorObservedEvent,
     ToolCallEvent,
     AIResponseEvent,
     ErrorEvent,
     SystemMessageEvent,
     SessionResetEvent,
+    TurnCompleteEvent,
     SystemCommandEvent,
 ]
 
@@ -160,6 +179,7 @@ class IncomingEvent(str, Enum):
     SET_ACTIVE_CONTROLLER = "set_active_controller"
     IMAGE_CHUNK = "image_chunk"
     ROUTING_CONFIG_UPDATE = "routing_config_update"
+    KEEPALIVE = "keepalive"
 
     @property
     def model(self):
@@ -172,6 +192,7 @@ class IncomingEvent(str, Enum):
             IncomingEvent.SET_ACTIVE_CONTROLLER: SetActiveControllerEvent,
             IncomingEvent.IMAGE_CHUNK: ImageChunkEvent,
             IncomingEvent.ROUTING_CONFIG_UPDATE: RoutingConfigUpdateEvent,
+            IncomingEvent.KEEPALIVE: KeepAliveEvent,
         }[self]
 
 class OutgoingEvent(str, Enum):
@@ -180,11 +201,13 @@ class OutgoingEvent(str, Enum):
     TRANSCRIPT = "transcript"
     AUDIO_OUTPUT = "audio_output"
     AUDIO_INTERRUPT = "audio_interrupt"
+    SENSOR_EVENT_OBSERVED = "sensor_event_observed"
     TOOL_CALL = "tool_call"
     AI_RESPONSE = "ai_response"
     ERROR = "error"
     SYSTEM_MESSAGE = "system_message"
     SESSION_RESET = "session_reset"
+    TURN_COMPLETE = "turn_complete"
     SYSTEM_COMMAND = "system_command"
 
     @property
@@ -195,10 +218,12 @@ class OutgoingEvent(str, Enum):
             OutgoingEvent.TRANSCRIPT: TranscriptEvent,
             OutgoingEvent.AUDIO_OUTPUT: AudioOutputEvent,
             OutgoingEvent.AUDIO_INTERRUPT: AudioInterruptEvent,
+            OutgoingEvent.SENSOR_EVENT_OBSERVED: SensorObservedEvent,
             OutgoingEvent.TOOL_CALL: ToolCallEvent,
             OutgoingEvent.AI_RESPONSE: AIResponseEvent,
             OutgoingEvent.ERROR: ErrorEvent,
             OutgoingEvent.SYSTEM_MESSAGE: SystemMessageEvent,
             OutgoingEvent.SESSION_RESET: SessionResetEvent,
+            OutgoingEvent.TURN_COMPLETE: TurnCompleteEvent,
             OutgoingEvent.SYSTEM_COMMAND: SystemCommandEvent,
         }[self]

@@ -1,243 +1,114 @@
 import asyncio
 import logging
-import sys
 import os
-import json # Für json.dumps im Tool Call Logging
-from typing import Union, Dict, Any, Optional
+import sys
+from typing import Any, Optional, Union
+
+from client.hardware_handler import HardwareHandler
 from client.websocket_client import (
-    WebSocketClient,
-    AllIncomingJsonEvents,
-    RegistrationAckEvent,
-    ActiveControllerChangeEvent,
     AIResponseEvent,
+    AllIncomingJsonEvents,
+    ErrorEvent,
+    RegistrationAckEvent,
+    SystemMessageEvent,
     ToolCallEvent,
     TranscriptEvent,
-    SystemMessageEvent,
-    ErrorEvent,
+    WebSocketClient,
 )
+from config import BACKEND_WS_URL, CLIENT_CAPABILITIES
 
-import numpy as np
-
-from client.audio_handler import AudioHandler
-from client.audio_input_handler import AudioInputHandler
-from client.hardware_handler import HardwareHandler
-
-from config import (
-    AUDIO_SAMPLE_RATE_OUTPUT,
-    BACKEND_WS_URL,
-    CLIENT_CAPABILITIES,
-    DISABLE_MIC_WHILE_AI_SPEAKS,
-    MIC_REENABLE_DELAY_MS,
-    NOISE_GATE_THRESHOLD,
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-
-logging.basicConfig(level=logging.INFO, stream=sys.stdout, 
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# import sounddevice as sd
-# print("Verfügbare Audio Geräte:")
-# print(sd.query_devices())
-
-# Initialisiere den Audio-Output-Handler (für Sprachausgabe vom Backend)
-audio_output_handler = AudioHandler(hardware_samplerate=16000, channels=2, dtype='float32', volume_factor=1.0)
-audio_playback_queue = asyncio.Queue()
-ai_speaking_until = 0.0
+websocket_client: Optional[WebSocketClient] = None
+hardware_handler: Optional[HardwareHandler] = None
 
 
-def mark_ai_audio_playback_active(audio_bytes: bytes, samplerate: int) -> None:
-    global ai_speaking_until
-
-    if not DISABLE_MIC_WHILE_AI_SPEAKS:
-        return
-
-    sample_count = len(audio_bytes) // 2
-    playback_duration_seconds = sample_count / float(samplerate) if samplerate > 0 else 0.0
-    tail_seconds = max(MIC_REENABLE_DELAY_MS, 0) / 1000.0
-    now = asyncio.get_running_loop().time()
-    ai_speaking_until = max(ai_speaking_until, now + playback_duration_seconds + tail_seconds)
-
-
-def microphone_upload_is_suppressed() -> bool:
-    if not DISABLE_MIC_WHILE_AI_SPEAKS:
-        return False
-
-    return asyncio.get_running_loop().time() < ai_speaking_until
-
-async def audio_playback_worker():
-    while True:
-        # Wartet, bis neue Audiodaten in der Queue landen
-        data = await audio_playback_queue.get()
-        
-        if data is None: # Abbruchsignal beim Beenden des Programms
-            break
-
-        mark_ai_audio_playback_active(data, AUDIO_SAMPLE_RATE_OUTPUT)
-
-        # Führt die blockierende Play-Funktion in einem separaten Thread aus!
-        await asyncio.to_thread(audio_output_handler.play_audio, data, AUDIO_SAMPLE_RATE_OUTPUT)
-        
-        # Sagt der Queue, dass dieser Chunk fertig ist
-        audio_playback_queue.task_done()
-
-async def send_sensor_data_to_gemini(sensor_id: str, event_type: str, value: Any, intensity: Optional[str] = None):
-    """Wird vom HardwareHandler gerufen und sendet strukturierte Sensor-Events an das Backend."""
+async def send_sensor_data_to_server(
+    sensor_id: str,
+    event_type: str,
+    value: Any,
+    intensity: Optional[str] = None,
+):
     if websocket_client and websocket_client.is_connected:
-        logger.info(f"Sende Sensor-Event: sensor_id={sensor_id}, event={event_type}, value={value}, intensity={intensity}")
+        logger.info(
+            "Sende Sensor-Event: sensor_id=%s, event=%s, value=%s, intensity=%s",
+            sensor_id,
+            event_type,
+            value,
+            intensity,
+        )
         await websocket_client.send_sensor_event(sensor_id, event_type, value, intensity)
 
-# Globale Instanzen
-websocket_client: Optional[WebSocketClient] = None
-audio_input_handler: Optional[AudioInputHandler] = None
-
-# # Callback für eingehende Audio-Daten vom Mikrofon zum WebSocket
-# async def send_recorded_audio_to_websocket(audio_bytes: bytes):
-#     """
-#     Diese Funktion wird vom AudioInputHandler aufgerufen, wenn neue Audio-Daten verfügbar sind.
-#     Sie sendet die Daten direkt an den WebSocketClient, wenn dieser der aktive Controller ist.
-#     """
-#     if websocket_client and websocket_client.is_connected:
-#         if websocket_client.client_id == websocket_client.active_controller_id:
-#             await websocket_client.send_audio_chunk(audio_bytes)
-#         # else:
-#             # logger.debug("Nicht aktiver Controller, überspringe das Senden von Audio-Input.")
-#             # Dies ist jetzt eher ein Debug-Fall, da der InputHandler gestoppt werden sollte
-#             # wenn wir nicht der aktive Controller sind.
-#     # else:
-#         # logger.debug("WebSocketClient nicht verbunden oder nicht verfügbar. Überspringe das Senden von Audio-Input.")
-async def send_recorded_audio_to_websocket(audio_bytes: bytes):
-    """Sende Audio an WebSocket, filtert aber Hintergrundrauschen und Echos heraus."""
-    if websocket_client and websocket_client.is_connected:
-        if websocket_client.client_id == websocket_client.active_controller_id:
-            if microphone_upload_is_suppressed():
-                audio_bytes = b'\x00' * len(audio_bytes)
-
-            # --- NOISE GATE LOGIK ---
-            # Wandle Bytes in Numpy-Array (16-bit Integer) um
-            audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-            
-            # Berechne die durchschnittliche Lautstärke (RMS) des Chunks
-            # Wir nutzen float32, damit die Quadrate (square) nicht überlaufen
-            rms_volume = np.sqrt(np.mean(np.square(audio_array.astype(np.float32))))
-            
-            # Wenn die Lautstärke unter dem Schwellenwert liegt, muten wir den Chunk
-            if rms_volume < NOISE_GATE_THRESHOLD:
-                audio_bytes = b'\x00' * len(audio_bytes) # Ersetze mit purer Stille
-            # ------------------------
-
-            await websocket_client.send_audio_chunk(audio_bytes)
 
 async def on_websocket_connect():
-    """Wird aufgerufen, wenn der WebSocket erfolgreich verbunden ist."""
-    logger.info("Successfully connected to the backend!")
+    logger.info("Successfully connected to the backend.")
 
 
 async def on_websocket_error(e: Exception):
-    """Wird aufgerufen, wenn ein WebSocket-Fehler auftritt."""
-    logger.error(f"WebSocket error occurred: {e}", exc_info=True)
+    logger.error("WebSocket error occurred: %s", e, exc_info=True)
+
 
 async def handle_backend_message(data: Union[AllIncomingJsonEvents, bytes]):
-    """Verarbeitet eingehende Nachrichten vom Backend."""
-    global audio_input_handler, websocket_client
-
     if isinstance(data, bytes):
-        logger.debug(f"Received {len(data)} bytes of audio data. Playing...")      
-        # audio_output_handler.play_audio(data, incoming_samplerate=24000)
-        audio_playback_queue.put_nowait(data)
-    elif isinstance(data, dict):
-        message_type = data.get("type")
+        logger.debug("Ignoring %s bytes (hardware audio playback disabled).", len(data))
+        return
 
-        if message_type == "audio_interrupt":
-            logger.warning("🚨 Received audio_interrupt. Stopping current audio playback!")
-            
-            # Lösche alle noch wartenden Audio-Chunks aus der Queue
-            while not audio_playback_queue.empty():
-                try:
-                    audio_playback_queue.get_nowait()
-                    audio_playback_queue.task_done()
-                except asyncio.QueueEmpty:
-                    break
-                    
-            # Beendet den aktuell laufenden Ton auf der Hardware
-            # audio_output_handler.stop_playback()
-            logger.info(f"System Message: {data.get('message', 'Audio interrupted by user speech.')}")
+    if not isinstance(data, dict):
+        logger.warning("Received unexpected message format: %s - %s", type(data), data)
+        return
 
-        elif message_type == "registration_ack":
-            ack_data: RegistrationAckEvent = data
-            logger.info(f"Registration acknowledged: {ack_data.get('message')}")
-            # WebSocketClient aktualisiert seine internen IDs bereits. Hier nur zur Referenz.
-            logger.info(f"My client ID: {websocket_client.client_id}, Active controller ID: {websocket_client.active_controller_id}")
-            
-            # Die Logik zum Starten/Stoppen der Aufnahme wird nun zentralisiert im
-            # 'active_controller_change' Handler ausgeführt, der auch nach 'registration_ack'
-            # (implizit durch die initiale Zuweisung) und explizit bei echten Änderungen feuert.
-            # Ein manueller Start hier ist redundant und kann zu Race Conditions führen.
-            # Stattdessen stellen wir sicher, dass der AudioInputHandler im 'active_controller_change'
-            # entsprechend der initialen Controller-Rolle gestartet oder gestoppt wird.
-            logger.debug("Registration ACK received. Active controller logic deferred to active_controller_change handling.")
+    message_type = data.get("type")
 
-
-        elif message_type == "active_controller_change":
-            change_data: ActiveControllerChangeEvent = data
-            new_type = change_data.get('new_active_controller_type')
-            new_id = change_data.get('new_active_controller_id')
-            
-            logger.info(f"Active controller changed to: {new_type} (ID: {new_id})")
-            
-            if websocket_client and audio_input_handler:
-                # THE FIX: Check if we are the 'hardware' client OR if the ID matches
-                if new_type == "hardware" or websocket_client.client_id == new_id:
-                    logger.info("I am the active controller. Starting audio input.")
-                    await audio_input_handler.start_recording()
-                else:
-                    logger.info("Another client is now the active controller. Keeping mic ON for barge-in.")
-                    # await audio_input_handler.stop_recording()
-
-        elif message_type == "ai_response":
-            ai_response: AIResponseEvent = data
-            logger.info(f"AI Response (Text): {ai_response.get('text')}")
-        elif message_type == "transcript":
-            transcript_data: TranscriptEvent = data
-            logger.info(f"Transcript ({'Final' if transcript_data.get('is_final') else 'Interim'}): {transcript_data.get('text')}")
-        elif message_type == "system_message":
-            system_message_data: SystemMessageEvent = data
-            logger.info(f"System Message: {system_message_data.get('message')}")
-        elif message_type == "error":
-            error_data: ErrorEvent = data
-            logger.error(f"Backend Error: {error_data.get('message')}")
-        elif message_type == "tool_call":
-            tool_call_data: ToolCallEvent = data
-            logger.info(f"Tool Call Received: {tool_call_data.get('tool_name')} with args: {tool_call_data.get('args')} and suggested_action: {tool_call_data.get('suggested_action')}")
-        elif message_type == "system_command":
-            command = data.get("command") or data.get("action")
-            logger.warning(f"System command received: {command}")
-            if command == "restart":
-                logger.warning("🚨 Restart command received. Restarting squishy service...")
-                if websocket_client:
-                    await websocket_client.disconnect()
-                os.system("sudo systemctl restart squishy")
-        else:
-            logger.warning(f"Received unknown JSON message: {data}")
+    if message_type == "registration_ack":
+        ack_data: RegistrationAckEvent = data
+        logger.info("Registration acknowledged: %s", ack_data.get("message"))
+    elif message_type == "ai_response":
+        ai_response: AIResponseEvent = data
+        logger.info("AI Response (Text): %s", ai_response.get("text"))
+    elif message_type == "transcript":
+        transcript_data: TranscriptEvent = data
+        logger.info(
+            "Transcript (%s): %s",
+            "Final" if transcript_data.get("is_final") else "Interim",
+            transcript_data.get("text"),
+        )
+    elif message_type == "system_message":
+        system_message_data: SystemMessageEvent = data
+        logger.info("System Message: %s", system_message_data.get("message"))
+    elif message_type == "error":
+        error_data: ErrorEvent = data
+        logger.error("Backend Error: %s", error_data.get("message"))
+    elif message_type == "tool_call":
+        tool_call_data: ToolCallEvent = data
+        logger.info(
+            "Tool Call Received: %s with args: %s and suggested_action: %s",
+            tool_call_data.get("tool_name"),
+            tool_call_data.get("args"),
+            tool_call_data.get("suggested_action"),
+        )
+    elif message_type == "system_command":
+        command = data.get("command") or data.get("action")
+        logger.warning("System command received: %s", command)
+        if command == "restart":
+            logger.warning("Restart command received. Restarting squishy service...")
+            if websocket_client:
+                await websocket_client.disconnect()
+            os.system("sudo systemctl restart squishy")
     else:
-        logger.warning(f"Received unexpected message format: {type(data)} - {data}")
+        logger.warning("Received unknown JSON message: %s", data)
 
-def get_user_input_blocking():
-    """Kapselt den blockierenden input()-Aufruf für den Text-Chat."""
-    return input("Enter message (or 'exit' to quit): ")
 
 async def main():
-    global websocket_client, audio_input_handler, hardware_handler
+    global websocket_client, hardware_handler
 
-    logger.info("Starting Squishy Pi Client.")
-    logger.info(
-        "Mic suppression while AI speaks is %s (tail=%sms).",
-        "enabled" if DISABLE_MIC_WHILE_AI_SPEAKS else "disabled",
-        MIC_REENABLE_DELAY_MS,
-    )
+    logger.info("Starting Squishy hardware client (sensors + tool execution only).")
 
-    hardware_handler = HardwareHandler(
-        on_sensor_update_callback=send_sensor_data_to_gemini,
-    )
+    hardware_handler = HardwareHandler(on_sensor_update_callback=send_sensor_data_to_server)
 
     websocket_client = WebSocketClient(
         ws_url=BACKEND_WS_URL,
@@ -245,82 +116,31 @@ async def main():
         capabilities=CLIENT_CAPABILITIES,
         on_message_callback=handle_backend_message,
         on_connect_callback=on_websocket_connect,
-        on_error_callback=on_websocket_error
+        on_error_callback=on_websocket_error,
     )
-
     websocket_client.set_tool_call_handler(hardware_handler.handle_tool_call)
-
-    audio_input_handler = AudioInputHandler(
-        on_audio_data_callback=send_recorded_audio_to_websocket,
-        target_channels=1,
-        # device_name_keywords=["UM10", "USB Audio Device"],
-        device_name_keywords=["ArrayUAC10", "ReSpeaker"],
-        rates_to_test=[48000, 44100, 16000]
-    )
-    
-    if not await audio_input_handler.initialize():
-        logger.error("AudioInputHandler konnte nicht initialisiert werden. Überprüfe die Hardware!")
-        audio_input_handler.terminate()
-        return
-
-    playback_task = asyncio.create_task(audio_playback_worker())
 
     await websocket_client.connect()
     await hardware_handler.start()
-    await asyncio.sleep(2) 
 
-    if websocket_client.is_connected:
-        # Initialer Check und ggf. Request for control
-        if not websocket_client.active_controller_id: # Falls active_controller_id noch nicht gesetzt
-            logger.warning("Active controller ID not yet set after connection. Waiting for it or requesting control.")
-            await websocket_client.request_set_active_controller()
-            await asyncio.sleep(1) # Gib dem Backend Zeit zu antworten
-
-        if websocket_client.client_id == websocket_client.active_controller_id:
-            logger.info("I am the active controller (initial or after request). Initiating persona greeting.")
-            await websocket_client.send_text_message("Sag einmal nur das Wort Apfelbaum")
-            # AudioInputHandler wird hier NICHT explizit gestartet,
-            # da dies durch das `active_controller_change` Event in `handle_backend_message`
-            # (das auch bei initialer Zuweisung getriggert wird) oder bei einem Wechsel geschieht.
-        else:
-            logger.warning("I am not the active controller. I can only listen.")
-            # Auch hier wird der AudioInputHandler durch `active_controller_change` gestoppt,
-            # falls er unerwartet lief.
-
-        # Schleife für Text-Input (läuft parallel zur Audioverarbeitung)
-        while websocket_client.is_connected:
-            user_input = await asyncio.to_thread(get_user_input_blocking)
-            
-            if user_input.lower() == 'exit':
-                break
-            if websocket_client.client_id == websocket_client.active_controller_id:
-                await websocket_client.send_text_message(user_input)
-            else:
-                logger.warning("Cannot send text message, I am not the active controller.")
-            
-            await asyncio.sleep(0.1)
-
-    else:
+    if not websocket_client.is_connected:
         logger.error("Failed to connect to WebSocket, exiting.")
-
-    # Aufräumen beim Beenden
-    if audio_input_handler:
-        await audio_input_handler.stop_recording()
-        audio_input_handler.terminate()
-    
-    audio_playback_queue.put_nowait(None)
+    else:
+        while websocket_client.is_connected:
+            await asyncio.sleep(0.5)
 
     if websocket_client:
         await websocket_client.disconnect()
-    audio_output_handler.stop_all_streams()
-    await hardware_handler.stop()
-    logger.info("Squishy Pi Client stopped.")
+    if hardware_handler:
+        await hardware_handler.stop()
+
+    logger.info("Squishy hardware client stopped.")
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Client stopped by user (KeyboardInterrupt). 🪦 ")
-        pass
-    except Exception as e:
+        logger.info("Client stopped by user (KeyboardInterrupt).")
+    except Exception:
         logger.exception("An unexpected error occurred in main.")

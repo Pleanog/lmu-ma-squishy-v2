@@ -11,14 +11,14 @@
         aria-label="Open admin dashboard"
         @click="openAdminDashboard"
       />
-      <Button
+      <!-- <Button
         icon="pi pi-bookmark"
         rounded
         text
         severity="secondary"
         aria-label="Open saved memories"
         @click="openMemoriesDialog"
-      />
+      /> -->
       <Button
         icon="pi pi-cog"
         rounded
@@ -31,17 +31,17 @@
 
     <Dialog v-model:visible="usernameDialogVisible" modal header="Username" :style="{ width: '28rem' }">
       <div class="flex flex-column gap-3">
-        <label for="session-username" class="font-medium">Wie möchtest du genannt werden?</label>
+        <label for="session-username" class="font-medium">How would you like to be called?</label>
         <InputText id="session-username" v-model="username" placeholder="Dein Name" @keyup.enter="saveUsername" />
 
         <div class="flex flex-column gap-2">
-          <label for="participant-id" class="font-medium">Teilnehmer-ID</label>
+          <label for="participant-id" class="font-medium">Participant-ID</label>
           <InputText id="participant-id" v-model="participantId" placeholder="Teilnehmer-ID" />
-          <small class="text-color-secondary">Wird genutzt, um gespeicherte Erinnerungen robust einem Nutzer zuzuordnen.</small>
+          <small class="text-color-secondary">Is used to determine the User and linked interactions</small>
         </div>
 
         <div class="flex flex-column gap-2 mt-2">
-          <label class="font-medium">Nachrichten anzeigen</label>
+          <label class="font-medium">System Messages inline during Chat</label>
           <div class="flex align-items-center justify-content-between">
             <span class="text-sm text-color-secondary">System-Infos</span>
             <Checkbox v-model="messageVisibility.showSystemMessages" binary />
@@ -56,7 +56,7 @@
           </div>
         </div>
 
-        <div class="flex flex-column gap-2 mt-2">
+        <!-- <div class="flex flex-column gap-2 mt-2">
           <label class="font-medium">Routing-Steuerung</label>
           <div class="flex align-items-center justify-content-between">
             <span class="text-sm text-color-secondary">Hardware Mic (Input an KI)</span>
@@ -71,13 +71,13 @@
             <Checkbox v-model="routingConfig.uiTextModeEnabled" binary />
           </div>
           <small class="text-color-secondary">Die Hardware darf weiter streamen, aber der Server kann Eingabe/Ausgabe gezielt ignorieren.</small>
-        </div>
+        </div> -->
 
         <div class="flex flex-column gap-2 mt-2">
-          <label for="gemini-api-key" class="font-medium">Gemini API Key (dynamisch)</label>
+          <label for="gemini-api-key" class="font-medium">Gemini API Key (dynamic)</label>
           <InputText id="gemini-api-key" v-model="geminiApiKeyDraft" type="password" placeholder="Neuen API Key einfügen" />
           <small class="text-color-secondary">
-            Setzt den Gemini-Key ohne Server-Neustart. Danach wird die aktive Gemini-Session technisch neu initialisiert.
+            Sets the Gemini key without a server restart. After that, the active Gemini session is technically reinitialized.
           </small>
           <div class="flex gap-2 flex-wrap">
             <Button
@@ -99,7 +99,7 @@
           </div>
         </div>
 
-        <div class="flex flex-column gap-2 mt-2">
+        <!-- <div class="flex flex-column gap-2 mt-2">
           <label class="font-medium">Recovery / Admin Aktionen</label>
           <small class="text-color-secondary">
             Nutze diese Buttons, wenn Gemini nicht mehr antwortet oder die Hardware neu gestartet werden soll.
@@ -131,6 +131,15 @@
             class="justify-content-start p-0 mt-1"
             @click="openAdminDashboard"
           />
+        </div> -->
+        <div class="flex flex-column gap-2 mt-2">
+          <label class="font-medium">Session Settings</label>
+          <small class="text-color-secondary">
+            Disconnect from the current session and stop the Interface.
+          </small>
+          <div class="flex gap-2 flex-wrap">
+            <Button label="Disconnect" icon="pi pi-times" severity="danger" @click="handleDisconnect" />
+          </div>
         </div>
 
         <small v-if="adminActionMessage" class="text-color-secondary">{{ adminActionMessage }}</small>
@@ -148,8 +157,8 @@
           <Button label="Neu laden" icon="pi pi-refresh" text size="small" :loading="memoriesLoading" @click="loadMemories" />
         </div>
         <div v-if="memoriesError" class="memories-error">{{ memoriesError }}</div>
-        <div v-else-if="memoriesLoading" class="memories-state">Lade Erinnerungen...</div>
-        <div v-else-if="savedMemories.length === 0" class="memories-state">Noch keine gespeicherten Erinnerungen vorhanden.</div>
+        <div v-else-if="memoriesLoading" class="memories-state">Loading Memories...</div>
+        <div v-else-if="savedMemories.length === 0" class="memories-state">No Memorier found so far.</div>
         <div v-else class="memories-list">
           <div v-for="memory in savedMemories" :key="memory.id" class="memory-item">
             <div class="memory-meta">
@@ -166,11 +175,12 @@
       <template #title>
         <div class="flex justify-content-between align-items-center">
           <div class="flex align-items-center gap-2">
-            <h1>Squishy 2.0</h1>
+            <h1>Tangible AI Assistant</h1>
             <Tag :value="displayUsername" severity="info" icon="pi pi-user" />
           </div>
           <div class="flex align-items-center gap-2">
             <Tag :value="status" :severity="statusSeverity" />
+            <Tag :value="hardwareStatusLabel" :severity="hardwareStatusSeverity" />
             <Tag v-if="clientIdShort" :value="`ID: ${clientIdShort}`" severity="secondary" />
             <Tag
               v-if="activeControllerId"
@@ -178,7 +188,7 @@
               :severity="isActiveController ? 'contrast' : 'info'"
               :icon="isActiveController ? 'pi pi-user-plus' : 'pi pi-user'"
             />
-            <Button
+            <!-- <Button
               v-if="isConnected && !isActiveController"
               label="Take Control"
               icon="pi pi-user-plus"
@@ -187,13 +197,13 @@
               @click="requestActiveController"
               aria-label="Request active controller role"
               v-tooltip.bottom="'Request to become the active controller for audio/text interaction.'"
-            />
+            /> -->
           </div>
         </div>
       </template>
       <template #content>
         <div v-if="!isConnected && !sessionEnded" class="p-4 bg-gray-100 border-round text-center">
-          <p class="mb-3">Click below to connect to the unified Squishy backend.</p>
+          <p class="mb-3">Click below to connect to your "Tangible AI Assistant" backend.</p>
           <Button label="Connect" icon="pi pi-bolt" :loading="connectLoading" @click="handleConnect" />
         </div>
 
@@ -203,32 +213,9 @@
         </div>
 
         <div v-if="isConnected && !sessionEnded" class="conversation-shell">
-          <div class="utility-actions">
-            <Button label="Disconnect" icon="pi pi-times" severity="danger" @click="handleDisconnect" />
-          </div>
-
-          <div class="sensor-actions">
-            <div class="gesture-grid">
-              <div v-for="gesture in gestureButtons" :key="gesture.code" class="gesture-card">
-                <Button
-                  class="gesture-button"
-                  :style="{ 
-                    backgroundColor: gesture.color, 
-                    borderColor: gesture.color,
-                    color: `color-mix(in srgb, ${gesture.color} 20%, #000000)`
-                  }"
-                  :icon="gesture.icon"
-                  @click="sendGesture(gesture)"
-                >
-                  <span class="gesture-button-content">
-                    <span class="gesture-button-title">{{ gesture.code }}</span>
-                    <span class="gesture-button-subtitle">{{ gesture.name }}</span>
-                  </span>
-                </Button>
-                <small class="gesture-caption">{{ gesture.backendEvent }}</small>
-              </div>
-            </div>
-          </div>
+          <!-- <div class="utility-actions">
+            
+          </div> -->
 
           <div v-if="false" class="legacy-video-panel hidden-legacy-controls">
             <div v-if="showVideoPlaceholder" class="legacy-video-placeholder">
@@ -242,17 +229,55 @@
 
           <div class="chat-log" ref="chatLogRef">
             <div v-for="(msg, index) in chatMessages" :key="index" :class="['message-row', msg.type]">
-              <div v-if="msg.type === 'system' || msg.type === 'error' || msg.type === 'function_call' || msg.type === 'hardware'" class="message-system" :class="msg.type">
-                <span class="badge">{{ msg.type === 'system' ? 'System' : msg.type === 'error' ? 'Error' : msg.type === 'hardware' ? 'Hardware' : 'Tool' }}</span>
-                <div class="message-content" v-html="renderMarkdown(msg.text)"></div>
+              <div v-if="msg.type === 'hardware' && msg.chipLabel" class="hardware-chip-standalone">
+                <span class="hardware-chip" :style="{ borderColor: msg.chipColor || '#a855f7' }">
+                  <span class="hardware-chip-dot" :style="{ backgroundColor: msg.chipColor || '#a855f7' }"></span>
+                  {{ msg.chipLabel }}
+                </span>
               </div>
-              <div v-else class="message-bubble" :class="msg.type" v-html="renderMarkdown(msg.text)"></div>
+              <div
+                v-if="msg.type === 'system' || msg.type === 'error' || msg.type === 'function_call' || (msg.type === 'hardware' && !msg.chipLabel)"
+                class="message-system"
+                :class="msg.type"
+              >
+                <span class="badge">{{ msg.type === 'system' ? 'System' : msg.type === 'error' ? 'Error' : msg.type === 'hardware' ? 'Hardware' : 'Tool' }}</span>
+                <div v-if="msg.text" class="message-content" v-html="renderMarkdown(msg.text)"></div>
+              </div>
+              <div v-else-if="msg.type === 'user' || msg.type === 'gemini'" class="message-bubble" :class="msg.type" v-html="renderMarkdown(msg.text)"></div>
             </div>
           </div>
 
           <div class="composer">
+            <!-- <Button
+              icon="pi pi-sliders-h"
+              severity="secondary"
+              text
+              rounded
+              aria-label="Open interaction simulations"
+              @click="toggleGesturePopover"
+            /> -->
+            <Popover ref="gesturePopoverRef">
+              <div class="gesture-grid popover-gesture-grid">
+                <div v-for="gesture in gestureButtons" :key="gesture.code" class="gesture-card">
+                  <Button
+                    class="gesture-button"
+                    :style="{
+                      backgroundColor: gesture.color,
+                      borderColor: gesture.color,
+                      color: `color-mix(in srgb, ${gesture.color} 20%, #000000)`
+                    }"
+                    :icon="gesture.icon"
+                    @click="sendGesture(gesture)"
+                  >
+                    <span class="gesture-button-content">
+                      <span class="gesture-button-title">{{ gesture.name }}</span>
+                    </span>
+                  </Button>
+                </div>
+              </div>
+            </Popover>
             <Button
-              :label="mediaHandler.isRecording.value ? 'Voice Mode deaktivieren' : 'Voice Mode aktivieren'"
+              :label="mediaHandler.isRecording.value ? 'deactivate voice-mode' : 'activate voice-mode'"
               :icon="mediaHandler.isRecording.value ? 'pi pi-microphone-slash' : 'pi pi-microphone'"
               :severity="mediaHandler.isRecording.value ? 'danger' : 'secondary'"
               :disabled="!isActiveController && activeControllerId !== null"
@@ -288,6 +313,7 @@ import InputText from 'primevue/inputtext';
 import Checkbox from 'primevue/checkbox';
 import Tag from 'primevue/tag';
 import Dialog from 'primevue/dialog';
+import Popover from 'primevue/popover';
 import MarkdownIt from 'markdown-it';
 import markdownItKatex from 'markdown-it-katex';
 import hljs from 'highlight.js/lib/core';
@@ -347,11 +373,68 @@ function ensureParticipantId(): string {
   return generated;
 }
 
+function getDefaultWsUrl(): string {
+  if (typeof window === 'undefined') return 'ws://127.0.0.1:8000/ws';
+  const secure = window.location.protocol === 'https:';
+  const protocol = secure ? 'wss' : 'ws';
+  return `${protocol}://${window.location.host}/ws`;
+}
+
 function getApiBaseUrl(): string {
   const ws = wsUrl.value.trim();
+  if (ws.startsWith('/')) {
+    return typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8000';
+  }
   if (ws.startsWith('wss://')) return ws.replace('wss://', 'https://').replace(/\/ws$/, '');
   if (ws.startsWith('ws://')) return ws.replace('ws://', 'http://').replace(/\/ws$/, '');
+  if (typeof window !== 'undefined') return window.location.origin;
   return 'http://127.0.0.1:8000';
+}
+
+function applyHardwareStatus(statusPayload: any): void {
+  const statusText = statusPayload?.status_text || 'Prototype not connected';
+  hardwareStatusLabel.value = statusText;
+  if (statusPayload?.connected) {
+    hardwareStatusSeverity.value = 'success';
+    return;
+  }
+  if (typeof statusPayload?.last_keepalive_age_seconds === 'number') {
+    hardwareStatusSeverity.value = 'warning';
+    return;
+  }
+  hardwareStatusSeverity.value = 'secondary';
+}
+
+async function refreshHardwareStatus(): Promise<void> {
+  try {
+    const res = await fetch(`${getApiBaseUrl()}/api/admin/status`);
+    if (!res.ok) {
+      return;
+    }
+    const payload = await res.json();
+    applyHardwareStatus(payload?.hardware_status);
+  } catch {
+    // ignore transient polling errors
+  }
+}
+
+function startHardwareStatusPolling(): void {
+  stopHardwareStatusPolling()
+  void refreshHardwareStatus();
+  hardwareStatusPollHandle = window.setInterval(() => {
+    void refreshHardwareStatus();
+  }, 3000);
+}
+
+function stopHardwareStatusPolling(): void {
+  if (hardwareStatusPollHandle !== null) {
+    window.clearInterval(hardwareStatusPollHandle);
+    hardwareStatusPollHandle = null;
+  }
+}
+
+function toggleGesturePopover(event: Event): void {
+  gesturePopoverRef.value?.toggle(event);
 }
 
 function openAdminDashboard(): void {
@@ -365,14 +448,14 @@ function formatMemoryDate(rawDate: string): string {
 }
 
 // Reactive state
-const wsUrl = ref('ws://127.0.0.1:8000/ws');
+const wsUrl = ref(getDefaultWsUrl());
 const status = ref('Disconnected');
 const isConnected = ref(false);
 const connectLoading = ref(false);
 const sessionEnded = ref(false);
 const textInput = ref('');
 const PARTICIPANT_ID_STORAGE_KEY = 'squishy-participant-id';
-const username = ref<string>(localStorage.getItem('squishy-username') || 'Gast');
+const username = ref<string>(localStorage.getItem('squishy-username') || 'Guest');
 const participantId = ref<string>(localStorage.getItem(PARTICIPANT_ID_STORAGE_KEY) || '');
 const usernameDialogVisible = ref(false);
 const memoriesDialogVisible = ref(false);
@@ -381,13 +464,18 @@ const memoriesError = ref('');
 const geminiApiKeyDraft = ref('');
 const adminActionLoading = ref(false);
 const adminActionMessage = ref('');
+const hardwareStatusLabel = ref('Prototype not connected');
+const hardwareStatusSeverity = ref<'success' | 'warning' | 'secondary'>('secondary');
 let geminiClient: GeminiClient | null = null;
+let hardwareStatusPollHandle: number | null = null;
 const router = useRouter();
 
 // Chat message interface updated for new types
 interface ChatMessage {
   type: 'user' | 'gemini' | 'function_call' | 'system' | 'hardware' | 'error';
   text: string;
+  chipLabel?: string;
+  chipColor?: string;
 }
 
 interface SavedMemory {
@@ -401,14 +489,14 @@ interface GestureButtonConfig {
   code: string;
   name: string;
   backendEvent:
-    | 'firm_press_head'
-    | 'hush_gesture'
-    | 'place_on_table'
-    | 'multi_tap_head_open_hand'
+    | 'press_head'
+    | 'hush'
+    | 'drop_on_table'
+    | 'tap_head'
     | 'target_focus'
     | 'horizontal_turn'
-    | 'vertical_shake'
-    | 'squeeze_sides';
+    | 'shake'
+    | 'squeeze';
   icon: string;
   severity: 'primary' | 'secondary' | 'success' | 'info' | 'warning' | 'danger' | 'contrast';
   color: string;
@@ -499,39 +587,39 @@ const savedMemories = ref<SavedMemory[]>([]);
 const gestureButtons: GestureButtonConfig[] = [
   {
     code: 'R1_Activate',
-    name: 'Activate',
-    backendEvent: 'firm_press_head',
+    name: 'Activate the Assistant',
+    backendEvent: 'press_head',
     icon: 'pi pi-power-off',
     severity: 'success',
     color: '#FFB3B3',
   },
   {
     code: 'R2_Stop',
-    name: 'Stop',
-    backendEvent: 'hush_gesture',
+    name: 'Stop the Assistant',
+    backendEvent: 'hush',
     icon: 'pi pi-stop-circle',
     severity: 'danger',
     color: '#FFDBB3',
   },
   {
     code: 'R3_Concise',
-    name: 'Concise',
-    backendEvent: 'place_on_table',
+    name: 'Be More Concise',
+    backendEvent: 'drop_on_table',
     icon: 'pi pi-align-center',
     severity: 'info',
     color: '#FFFBB3',
   },
   {
     code: 'R4_Elaborate',
-    name: 'Elaborate',
-    backendEvent: 'multi_tap_head_open_hand',
+    name: 'Be More Elaborate',
+    backendEvent: 'tap_head',
     icon: 'pi pi-file-edit',
     severity: 'primary',
     color: '#E3FFB3',
   },
   {
     code: 'R5_Save',
-    name: 'Save',
+    name: 'Save Last Interaction',
     backendEvent: 'target_focus',
     icon: 'pi pi-bookmark',
     severity: 'warning',
@@ -539,7 +627,7 @@ const gestureButtons: GestureButtonConfig[] = [
   },
   {
     code: 'R6_NewSession',
-    name: 'New Session',
+    name: 'Start New Session',
     backendEvent: 'horizontal_turn',
     icon: 'pi pi-refresh',
     severity: 'contrast',
@@ -547,16 +635,16 @@ const gestureButtons: GestureButtonConfig[] = [
   },
   {
     code: 'R7_Options',
-    name: 'Options',
-    backendEvent: 'vertical_shake',
+    name: 'Give Me Different Options',
+    backendEvent: 'shake',
     icon: 'pi pi-directions-alt',
     severity: 'secondary',
     color: '#B3DBFF',
   },
   {
     code: 'R8_Optimize',
-    name: 'Optimize',
-    backendEvent: 'squeeze_sides',
+    name: 'Optimize Promt',
+    backendEvent: 'squeeze',
     icon: 'pi pi-sliders-h',
     severity: 'info',
     color: '#B3B3FF',
@@ -567,6 +655,7 @@ const gestureButtons: GestureButtonConfig[] = [
 const videoPreview = ref<HTMLVideoElement | null>(null);
 const videoCanvas = ref<HTMLCanvasElement | null>(null);
 const chatLogRef = ref<HTMLElement | null>(null);
+const gesturePopoverRef = ref<any>(null);
 
 // Utility instances
 const mediaHandler = new MediaHandler();
@@ -584,7 +673,7 @@ const showVideoPlaceholder = computed(() => {
 });
 
 const displayUsername = computed(() => {
-  return username.value.trim() || 'Gast';
+  return username.value.trim() || 'Guest';
 });
 
 const clientIdShort = computed(() => {
@@ -624,6 +713,22 @@ function appendMessage(type: ChatMessage['type'], text: string): number {
   return chatMessages.value.length - 1;
 }
 
+function appendHardwareMessage(text: string, chipLabel?: string, chipColor?: string): number {
+  if (!shouldDisplayMessage('hardware')) {
+    return -1;
+  }
+  chatMessages.value.push({ type: 'hardware', text, chipLabel, chipColor });
+  scrollToChatBottom();
+  return chatMessages.value.length - 1;
+}
+
+function getGestureConfigByEvent(eventName: string | undefined): GestureButtonConfig | undefined {
+  if (!eventName) {
+    return undefined;
+  }
+  return gestureButtons.find((gesture) => gesture.backendEvent === eventName);
+}
+
 function updateMessage(index: number, newText: string): void {
   if (index >= 0 && chatMessages.value[index]) {
     chatMessages.value[index].text += newText;
@@ -642,6 +747,7 @@ function scrollToChatBottom(): void {
 function handleJsonMessage(msg: any): void {
   if (msg.type === "audio_interrupt") {
     mediaHandler.stopAudioPlayback();
+    mediaHandler.stopAudio();
     currentGeminiMessageIndex = null;
     currentUserMessageIndex = null;
     appendMessage("system", msg.message);
@@ -686,9 +792,26 @@ function handleJsonMessage(msg: any): void {
     };
   } else if (msg.type === "session_reset") {
     mediaHandler.stopAudioPlayback();
+    mediaHandler.stopAudio();
     currentGeminiMessageIndex = null;
     currentUserMessageIndex = null;
     chatMessages.value = [];
+  } else if (msg.type === "turn_complete") {
+    currentGeminiMessageIndex = null;
+    currentUserMessageIndex = null;
+  } else if (msg.type === "sensor_event_observed") {
+    const gestureEventName = msg.mapped_gesture || msg.event;
+    const gestureConfig = getGestureConfigByEvent(gestureEventName);
+    if (gestureConfig) {
+      appendHardwareMessage('', gestureConfig.name, gestureConfig.color);
+    }
+  } else if (msg.type === "system_command") {
+    const command = msg.command || msg.action;
+    if (command === "set_microphone_state") {
+      const enabled = Boolean(msg.payload?.enabled);
+      void setMicrophoneEnabled(enabled);
+      appendMessage("system", enabled ? "Mic activated by gesture." : "Mic deactivated by gesture.");
+    }
   } else if (msg.type === "system_message") {
     appendMessage("system", msg.message);
   } else if (msg.type === "error") {
@@ -698,7 +821,7 @@ function handleJsonMessage(msg: any): void {
 function saveUsername(): void {
   const trimmed = username.value.trim();
   const participant = ensureParticipantId();
-  username.value = trimmed || 'Gast';
+  username.value = trimmed || 'Guest';
   localStorage.setItem('squishy-username', username.value);
   localStorage.setItem(PARTICIPANT_ID_STORAGE_KEY, participant);
   persistMessageVisibility();
@@ -860,6 +983,7 @@ const geminiClientCallbacks = {
         uiTextModeEnabled: routingConfig.value.uiTextModeEnabled,
       });
     }
+    startHardwareStatusPolling();
   },
   // *** REPARIERTER onMessage CALLBACK ***
   // It now receives either a parsed JSON object or a raw ArrayBuffer
@@ -878,12 +1002,15 @@ const geminiClientCallbacks = {
     console.log("WS Closed:", e);
     status.value = "Disconnected";
     isConnected.value = false;
+    stopHardwareStatusPolling();
+    applyHardwareStatus(undefined);
     showSessionEnd();
   },
   onError: (e: Event) => {
     console.error("WS Error:", e);
     status.value = "Connection Error";
     isConnected.value = false;
+    stopHardwareStatusPolling();
   },
 };
 
@@ -926,34 +1053,51 @@ function handleDisconnect(): void {
   }
 }
 
-async function toggleMic(): Promise<void> {
-  if (!isActiveController.value && activeControllerId.value !== null) {
-      alert("You are not the active controller. Cannot send mic input.");
+async function startMicrophoneCapture(): Promise<void> {
+  await mediaHandler.startAudio((data) => {
+    if (geminiClient && geminiClient.isConnected()) {
+      try {
+        let bufferToSend: ArrayBuffer;
+        const srcView = new Uint8Array(data as ArrayBufferLike);
+        const copy = new Uint8Array(srcView.length);
+        copy.set(srcView);
+        bufferToSend = copy.buffer;
+        geminiClient.send(bufferToSend);
+      } catch (err) {
+        console.error('Failed to prepare audio buffer for sending', err);
+      }
+    }
+  });
+}
+
+async function setMicrophoneEnabled(enabled: boolean): Promise<void> {
+  if (enabled) {
+    if (mediaHandler.isRecording.value) {
       return;
+    }
+    try {
+      await startMicrophoneCapture();
+    } catch (e) {
+      const details = String(e);
+      const hint = typeof navigator !== 'undefined' && (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+        ? 'Microphone access needs a secure context (HTTPS) on remote devices.'
+        : '';
+      alert(`Could not start audio capture: ${details}${hint ? `\n${hint}` : ''}`);
+    }
+    return;
   }
+
   if (mediaHandler.isRecording.value) {
     mediaHandler.stopAudio();
-  } else {
-    try {
-      await mediaHandler.startAudio((data) => {
-        if (geminiClient && geminiClient.isConnected()) {
-          try {
-            // Ensure we pass a real ArrayBuffer (not a SharedArrayBuffer) to match GeminiClient.send signature
-            let bufferToSend: ArrayBuffer;
-            const srcView = new Uint8Array(data as ArrayBufferLike);
-            const copy = new Uint8Array(srcView.length);
-            copy.set(srcView);
-            bufferToSend = copy.buffer;
-            geminiClient.send(bufferToSend);
-          } catch (err) {
-            console.error('Failed to prepare audio buffer for sending', err);
-          }
-        }
-      });
-    } catch (e) {
-      alert("Could not start audio capture: " + e);
-    }
   }
+}
+
+async function toggleMic(): Promise<void> {
+  if (!isActiveController.value && activeControllerId.value !== null) {
+    alert("You are not the active controller. Cannot send mic input.");
+    return;
+  }
+  await setMicrophoneEnabled(!mediaHandler.isRecording.value);
 }
 
 async function toggleCamera(): Promise<void> {
@@ -1045,27 +1189,19 @@ function sendText(): void {
 function sendGesture(gesture: GestureButtonConfig): void {
   if (geminiClient && geminiClient.isConnected()) {
     geminiClient.sendGestureEvent(gesture.backendEvent);
-    appendMessage('hardware', `Simulated gesture: ${gesture.code} -> ${gesture.backendEvent}`);
+    gesturePopoverRef.value?.hide();
   } else {
     alert('Not connected to send gesture events.');
   }
 }
-
-function requestActiveController(): void {
-    if (geminiClient && geminiClient.isConnected() && geminiClient.clientId) {
-        geminiClient.requestSetActiveController();
-        appendMessage("system", "Requesting to become active controller...");
-    } else {
-        alert("Not connected or client ID not set. Cannot request active controller.");
-    }
-}
-
 
 function resetUI(): void {
   isConnected.value = false;
   sessionEnded.value = false;
   connectLoading.value = false;
   status.value = "Disconnected";
+  stopHardwareStatusPolling();
+  applyHardwareStatus(undefined);
   chatMessages.value = [];
   textInput.value = '';
 
@@ -1088,6 +1224,7 @@ function showSessionEnd(): void {
 
 // Lifecycle Hooks
 onUnmounted(() => {
+  stopHardwareStatusPolling();
   if (geminiClient) {
     geminiClient.disconnect();
   }
@@ -1124,7 +1261,6 @@ gap: 1rem;
 }
 
 .utility-actions,
-.sensor-actions,
 .composer {
 display: flex;
 flex-wrap: wrap;
@@ -1132,18 +1268,15 @@ gap: 0.75rem;
 align-items: center;
 }
 
-.sensor-actions {
-padding: 0.5rem 0.75rem;
-border: 1px solid var(--surface-200);
-border-radius: 0.75rem;
-background: rgba(148, 163, 184, 0.04);
-}
-
 .gesture-grid {
 display: grid;
 grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 gap: 0.75rem;
 width: 100%;
+}
+
+.popover-gesture-grid {
+min-width: min(90vw, 360px);
 }
 
 .gesture-card {
@@ -1295,7 +1428,8 @@ border-radius: 0.85rem;
 background: rgba(148, 163, 184, 0.08);
 border: 1px solid rgba(148, 163, 184, 0.2);
 color: var(--text-color);
-font-size: 0.78rem;
+font-size: 0.7rem;
+padding: 0.45rem 0.65rem;
 }
 
 .message-system.error {
@@ -1313,12 +1447,39 @@ background: rgba(168, 85, 247, 0.06);
 border-color: rgba(168, 85, 247, 0.2);
 }
 
+.hardware-chip-standalone {
+display: inline-flex;
+align-items: center;
+justify-content: center;
+width: 100%;
+}
+
+.hardware-chip {
+display: inline-flex;
+align-items: center;
+gap: 0.35rem;
+border: 1px solid;
+border-radius: 999px;
+padding: 0.1rem 0.45rem;
+font-size: 0.65rem;
+font-weight: 600;
+margin-bottom: 0.45rem;
+background: rgba(255, 255, 255, 0.7);
+}
+
+.hardware-chip-dot {
+width: 0.45rem;
+height: 0.45rem;
+border-radius: 999px;
+display: inline-block;
+}
+
 .badge {
 display: inline-flex;
 align-items: center;
 border-radius: 999px;
 padding: 0.15rem 0.5rem;
-font-size: 0.62rem;
+font-size: 0.58rem;
 font-weight: 600;
 letter-spacing: 0.04em;
 text-transform: uppercase;

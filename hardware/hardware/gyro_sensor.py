@@ -81,7 +81,7 @@ class OrientationSensor(BaseSensor):
         if state_str == "+Z":
             return {
                 "sensor_id": "gyro",
-                "event": "place_on_table",
+                "event": "drop_on_table",
                 "value": state_str,
                 "intensity": None,
             }
@@ -102,7 +102,7 @@ class OrientationSensor(BaseSensor):
         if state_str in {"+Y", "-Y"}:
             return {
                 "sensor_id": "gyro",
-                "event": "vertical_shake",
+                "event": "shake",
                 "value": state_str,
                 "intensity": None,
             }

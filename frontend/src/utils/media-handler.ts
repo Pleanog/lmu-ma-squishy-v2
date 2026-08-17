@@ -1,6 +1,6 @@
 // FILE: src/utils/media-handler.ts
 
-import { ref, watch, type Ref } from 'vue'; // Import type Ref for consistency
+import { ref, watch } from 'vue';
 
 export class MediaHandler {
   private audioContext: AudioContext | null = null;
@@ -82,6 +82,9 @@ export class MediaHandler {
 
     await this.initializeAudio(); // Ensure audio context is ready
     if (!this.audioContext) throw new Error("AudioContext not initialized.");
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("Microphone API unavailable in this browser context (use HTTPS for remote access).");
+    }
 
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });

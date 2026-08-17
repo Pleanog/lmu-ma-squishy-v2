@@ -17,15 +17,15 @@ FRONTEND_CLIENT_CAPABILITIES = {
 }
 
 HARDWARE_CLIENT_CAPABILITIES = {
-    ClientCapability.AUDIO_INPUT,
-    ClientCapability.AUDIO_OUTPUT,
-    ClientCapability.TEXT_INPUT,
-    ClientCapability.TEXT_OUTPUT, # For receiving AI text responses
+    # ClientCapability.AUDIO_INPUT,
+    # ClientCapability.AUDIO_OUTPUT,
+    # ClientCapability.TEXT_INPUT,
+    # ClientCapability.TEXT_OUTPUT, # For receiving AI text responses
     ClientCapability.TOOL_EXECUTION,
     ClientCapability.SENSOR_INPUT,
-    ClientCapability.LED_CONTROL,
-    ClientCapability.VIBRATION_CONTROL,
-    ClientCapability.SOUND_PLAYBACK,
+    # ClientCapability.LED_CONTROL,
+    # ClientCapability.VIBRATION_CONTROL,
+    # ClientCapability.SOUND_PLAYBACK,
     # Add other hardware-specific capabilities as needed
 }
 

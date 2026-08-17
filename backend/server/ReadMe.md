@@ -69,8 +69,23 @@ uvicorn main:app --reload
 
 Oder mit spezifischem Port:
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload --host 0.0.0.0 --port 8000 --ws-ping-interval 60 --ws-ping-timeout 60
 ```
+
+Einfacher (empfohlen): Start mit Konfigurationsdatei.
+
+1. `.env.example` nach `.env` kopieren und bei Bedarf anpassen.
+2. Dann nur noch:
+
+```bash
+python run_server.py
+```
+
+Optional mit TLS (für Mic-Zugriff von anderen Geräten im LAN):
+
+- In `.env` setzen:
+  - `UVICORN_SSL_CERTFILE=certs/dev-cert.pem`
+  - `UVICORN_SSL_KEYFILE=certs/dev-key.pem`
 
 The server will start on:
 

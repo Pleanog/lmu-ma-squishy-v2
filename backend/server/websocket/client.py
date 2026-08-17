@@ -116,8 +116,7 @@ class WebSocketClient:
             self._disconnect_event.set()
         finally:
             asyncio.create_task(self.disconnect())
-
-
+            
     async def receive_events(self) -> AsyncGenerator[IncomingEventType, None]:
         """Asynchronously yields incoming events from the WebSocket."""
         try:
@@ -133,10 +132,19 @@ class WebSocketClient:
                         event_type_str = data.get("type")
 
                         if not event_type_str:
-                            logger.warning(f"Client {self.client_id}: Received text message without 'type': {data}")
-                            # Send an error back to the client
-                            await self.send_event(ErrorEvent(message="Received text message without 'type' field."))
-                            continue
+                            if isinstance(data, dict) and data.get("sensor_id"):
+                                event_type_str = IncomingEvent.SENSOR_EVENT.value
+                                data["type"] = event_type_str
+                                logger.info(
+                                    "Client %s: Inferred missing type as '%s' for sensor payload.",
+                                    self.client_id,
+                                    event_type_str,
+                                )
+                            else:
+                                logger.warning(f"Client {self.client_id}: Received text message without 'type': {data}")
+                                # Send an error back to the client
+                                await self.send_event(ErrorEvent(message="Received text message without 'type' field."))
+                                continue
 
                         try:
                             event_type = IncomingEvent(event_type_str)

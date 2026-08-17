@@ -81,15 +81,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue';
+import { ref, onUnmounted, nextTick } from 'vue';
 import Card from 'primevue/card';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import Message from 'primevue/message';
 import Divider from 'primevue/divider';
-// const wsUrl = ref('ws://localhost:8000/ws'); // Default to your FastAPI frontend WebSocket
-// const wsUrl = ref('http://127.0.0.1:8000/ws'); // Default to your FastAPI frontend WebSocket
-const wsUrl = ref('ws://127.0.0.1:8000/ws');
+
+function getDefaultWsUrl(): string {
+  if (typeof window === 'undefined') return 'ws://127.0.0.1:8000/ws';
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${protocol}://${window.location.host}/ws`;
+}
+
+const wsUrl = ref(getDefaultWsUrl());
 const websocket = ref<WebSocket | null>(null);
 const isConnected = ref(false);
 const loading = ref(false);

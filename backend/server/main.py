@@ -234,10 +234,7 @@ async def admin_status():
     return {
         "clients": clients,
         "client_counts": client_counts,
-        "active_controller_id": ws_manager.active_controller_id,
-        "routing_config": ws_manager.get_routing_config(),
-        "last_input_client_id": ws_manager.last_input_client_id,
-        "last_input_modality": ws_manager.last_input_modality,
+        "hardware_status": ws_manager.get_hardware_status(),
         "gemini": gemini_session_manager.get_runtime_status(),
     }
 

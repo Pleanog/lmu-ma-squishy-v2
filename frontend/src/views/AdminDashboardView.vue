@@ -84,7 +84,8 @@ const autoRefresh = ref(true);
 let refreshTimer: number | null = null;
 
 function getApiBaseUrl(): string {
-  return 'http://127.0.0.1:8000';
+  if (typeof window === 'undefined') return 'http://127.0.0.1:8000';
+  return window.location.origin;
 }
 
 function onOff(value: boolean | undefined): string {

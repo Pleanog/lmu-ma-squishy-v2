@@ -84,6 +84,27 @@ interface SessionResetEvent extends BaseEvent {
   message: string;
 }
 
+interface TurnCompleteEvent extends BaseEvent {
+  type: "turn_complete";
+}
+
+interface SensorObservedEvent extends BaseEvent {
+  type: "sensor_event_observed";
+  sensor_id: string;
+  event?: string;
+  value?: any;
+  intensity?: string;
+  source_client_type?: "frontend" | "hardware" | "monitor";
+  mapped_gesture?: string;
+}
+
+interface SystemCommandEvent extends BaseEvent {
+  type: "system_command";
+  command: string;
+  target?: string;
+  payload?: Record<string, any>;
+}
+
 // All possible incoming JSON events from the backend
 type IncomingBackendJsonEvent =
   | RegistrationAckEvent
@@ -94,7 +115,10 @@ type IncomingBackendJsonEvent =
   | AIResponseEvent
   | ErrorEvent
   | SystemMessageEvent
-  | SessionResetEvent;
+  | SessionResetEvent
+  | TurnCompleteEvent
+  | SensorObservedEvent
+  | SystemCommandEvent;
 
 
 // Client capabilities (matching backend enum `ClientCapability`)
@@ -122,6 +146,12 @@ interface GeminiClientConfig {
   participantId?: string;
 }
 
+function defaultWsUrl(): string {
+  if (typeof window === 'undefined') return 'ws://127.0.0.1:8000/ws';
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${protocol}://${window.location.host}/ws`;
+}
+
 export class GeminiClient {
   private ws: WebSocket | null = null;
   private config: GeminiClientConfig;
@@ -129,10 +159,11 @@ export class GeminiClient {
   private _clientId: Ref<string | null> = ref(null);
   private _activeControllerId: Ref<string | null> = ref(null);
   private _activeControllerType: Ref<"frontend" | "hardware" | "monitor" | null> = ref(null);
+  private _pendingJsonMessages: string[] = [];
 
   constructor(config: Partial<GeminiClientConfig>) {
     this.config = {
-      wsUrl: 'ws://127.0.0.1:8000/ws',
+      wsUrl: defaultWsUrl(),
       onOpen: () => console.log('WebSocket opened.'),
       onMessage: (data) => { // Default onMessage now expects parsed data or ArrayBuffer
         if (data instanceof ArrayBuffer) {
@@ -177,8 +208,8 @@ export class GeminiClient {
     this.ws.onopen = (_event) => {
       console.log("WebSocket connected. Sending registration...");
       this._isConnected.value = true;
-      this.config.onOpen();
       this.registerClient();
+      this.config.onOpen();
     };
 
     this.ws.onmessage = async (event) => { // <<< Make onmessage async to handle Blob.arrayBuffer() promise
@@ -211,6 +242,7 @@ export class GeminiClient {
             this._activeControllerId.value = ack.active_controller_id || null;
             this._activeControllerType.value = ack.current_active_controller_type || null;
             console.log(`Registered as ${this.config.clientType} with ID ${this._clientId.value}. Active Controller: ${this._activeControllerType.value} (${this._activeControllerId.value})`);
+            this.flushPendingJsonMessages();
           } else if (parsedData.type === "active_controller_change") {
             const change = parsedData as ActiveControllerChangeEvent;
             this._activeControllerId.value = change.new_active_controller_id;
@@ -233,6 +265,7 @@ export class GeminiClient {
       this._clientId.value = null;
       this._activeControllerId.value = null;
       this._activeControllerType.value = null;
+      this._pendingJsonMessages = [];
       this.config.onClose(event);
     };
 
@@ -242,8 +275,37 @@ export class GeminiClient {
       this._clientId.value = null;
       this._activeControllerId.value = null;
       this._activeControllerType.value = null;
+      this._pendingJsonMessages = [];
       this.config.onError(event);
     };
+  }
+
+  private sendOrQueueJson(payload: Record<string, unknown>, label: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn(`WebSocket not connected, cannot send ${label}.`);
+      return;
+    }
+    const serialized = JSON.stringify(payload);
+    if (!this._clientId.value) {
+      this._pendingJsonMessages.push(serialized);
+      console.warn(`${label} queued until registration_ack is received.`);
+      return;
+    }
+    this.ws.send(serialized);
+  }
+
+  private flushPendingJsonMessages(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this._clientId.value) {
+      return;
+    }
+    if (!this._pendingJsonMessages.length) {
+      return;
+    }
+    const pending = [...this._pendingJsonMessages];
+    this._pendingJsonMessages = [];
+    for (const message of pending) {
+      this.ws.send(message);
+    }
   }
 
   private registerClient(): void {
@@ -278,10 +340,14 @@ export class GeminiClient {
           timestamp: new Date().toISOString(),
           text: data,
         };
-        this.ws.send(JSON.stringify(textMessage));
+        this.sendOrQueueJson(textMessage, "text message");
       } else if (data instanceof ArrayBuffer) {
         // Raw audio bytes are sent directly without JSON wrapper in this new design
         // because the backend expects raw bytes for audio_chunk events
+        if (!this._clientId.value) {
+          console.warn("Ignoring audio chunk before registration_ack.");
+          return;
+        }
         this.ws.send(data);
       } else {
         console.warn('Attempted to send unsupported data type:', typeof data);
@@ -298,7 +364,7 @@ export class GeminiClient {
         timestamp: new Date().toISOString(),
         text: text,
       };
-      this.ws.send(JSON.stringify(textMessage));
+      this.sendOrQueueJson(textMessage, "text message");
     } else {
       console.warn('WebSocket not connected, cannot send text message.');
     }
@@ -311,7 +377,7 @@ export class GeminiClient {
         timestamp: new Date().toISOString(),
         data: base64Data,
       };
-      this.ws.send(JSON.stringify(imageMessage));
+      this.sendOrQueueJson(imageMessage, "image data");
     } else {
       console.warn('WebSocket not connected, cannot send image data.');
     }
@@ -327,7 +393,7 @@ export class GeminiClient {
         value: value,
         intensity: intensity,
       };
-      this.ws.send(JSON.stringify(sensorEvent));
+      this.sendOrQueueJson(sensorEvent, "sensor event");
     } else {
       console.warn('WebSocket not connected, cannot send sensor event.');
     }
@@ -341,7 +407,7 @@ export class GeminiClient {
         sensor_id: "gesture",
         event: gestureName,
       };
-      this.ws.send(JSON.stringify(gestureEvent));
+      this.sendOrQueueJson(gestureEvent, "gesture event");
     } else {
       console.warn('WebSocket not connected, cannot send gesture event.');
     }
@@ -360,7 +426,7 @@ export class GeminiClient {
         hardware_speaker_enabled: config.hardwareSpeakerEnabled,
         ui_text_mode_enabled: config.uiTextModeEnabled,
       };
-      this.ws.send(JSON.stringify(routingConfigEvent));
+      this.sendOrQueueJson(routingConfigEvent, "routing config");
     } else {
       console.warn('WebSocket not connected, cannot send routing config.');
     }
@@ -373,7 +439,7 @@ export class GeminiClient {
         timestamp: new Date().toISOString(),
         client_id: this._clientId.value,
       };
-      this.ws.send(JSON.stringify(setActiveEvent));
+      this.sendOrQueueJson(setActiveEvent, "set active controller");
     } else {
       console.warn('WebSocket not connected or client ID not set, cannot request active controller.');
     }
