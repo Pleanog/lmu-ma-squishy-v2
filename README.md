@@ -1,35 +1,56 @@
-1. Open VS Code
-2. Open 3 consoles besides each other
+## 🚀 Local Development Setup
 
-Next Step allways start Pocketbase first!
+To run the project locally, open **VS Code** and open **3 separate terminal panels** side-by-side. 
 
-3. Pocketbase:
+> **⚠️ IMPORTANT:** Services must be started in the correct order. **Always start Pocketbase first!**
 
-Navigate to "C:\Users\hive-2019\Desktop\lmu-ma-squishy-v2\backend\pocketbase_0.35.1_windows_amd64>"
-using "cd .\backend\pocketbase_0.35.1_windows_amd64\"
-Start the databse using "./pocketbase serve"
+### 1. Database (Pocketbase)
+*Must be started first.*
+1. In the first terminal, navigate to the Pocketbase directory:
+   ```bash
+   cd backend/pocketbase_0.35.1_windows_amd64
+   ```
+2. Start the database server:
+   ```bash
+   ./pocketbase serve
+   ```
 
-2. Main Server:
+### 2. Main Server (Python)
+1. In the second terminal, navigate to the server directory:
+   ```bash
+   cd backend/server
+   ```
+2. Activate the virtual environment:
+   ```bash
+   .\venv\Scripts\Activate
+   ```
+3. Start the main server:
+   ```bash
+   python run_server.py
+   ```
+* **To stop the server:** Press `Ctrl + C`
+* **To restart the server:** Simply run `python run_server.py` again (you do not need to reactivate the virtual environment as long as the terminal remains open).
 
-Navigate to "C:\Users\hive-2019\Desktop\lmu-ma-squishy-v2\backend\server>"
-using "cd \backend\server"
-then start the virtual enviroment using:
-".\venv\Scripts\Activate"
+### 3. Frontend (Node/npm)
+1. In the third terminal, navigate to the frontend directory:
+   ```bash
+   cd frontend
+   ```
+2. Start the development server:
+   ```bash
+   npm run dev
+   ```
+> **📝 Network Note:** The IP address shown in the console that starts with `10.XX...` is the local address used inside the private **HACUM** network.
 
-Now start the main server:
-"python run_server.py"
+---
+
+## Restarting & Troubleshooting
+
+* **Restarting the Frontend:** Press `Ctrl + C` to stop the current process, then run `npm run dev` again.
+* **Backend/Frontend Syncing (Crucial):** If you ever need to restart the **Main Server**, it is highly recommended that you restart the Frontend immediately after. 
 
 
-Stop Main Server with "Strg + C"
-Restart main Server with "python run_server.py" (on need to activate venv again)
 
-
-3. Frontend:
-Navigate to "C:\Users\hive-2019\Desktop\lmu-ma-squishy-v2\frontend>"
-using "cd frontend"
-Now start the frontend unsing: "npm run dev"
-
-The ip shown that starts with "10.XX..." is the one inside the private "HACUM" network.
 
 
 

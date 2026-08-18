@@ -34,8 +34,8 @@ class MessageRouter:
         logger.info("MessageRouter initialized.")
 
         self._gesture_system_injections: Dict[str, str] = {
-            "drop_on_table": "[System Sensors] Please repeat what you just said more briefly.",
-            "tap_head": "[System Sensors] Gesture 'tap_head' detected. From now on, explain the current topic in more detail and more comprehensively.",
+            "drop_on_table": "[System Sensors] Gesture 'drop_on_table' detected. Please repeat what you just said more briefly.",
+            "tap_head": "[System Sensors] Gesture 'tap_head' detected. Please, explain the last important piece of information in more detail and more comprehensively.",
             "target_focus": "[System Sensors] Gesture 'target_focus' detected. Summarize the last important piece of information very briefly in a few words and confirm that it has been saved in the browser's local storage.",
             "shake": "[System Sensors] Gesture 'shake' detected. The user wants to hear other options or alternative suggestions to the last answer. Provide them now.",
             "squeeze": "[System Sensors] Gesture 'squeeze' detected. Help the user optimize their last question or prompt; take the asked question and rephrase it in a more precise, clear, and effective way, give it back to the user, and state that you will now answer this new prompt."
