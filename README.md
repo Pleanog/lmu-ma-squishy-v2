@@ -1,3 +1,43 @@
+1. Open VS Code
+2. Open 3 consoles besides each other
+
+Next Step allways start Pocketbase first!
+
+3. Pocketbase:
+
+Navigate to "C:\Users\hive-2019\Desktop\lmu-ma-squishy-v2\backend\pocketbase_0.35.1_windows_amd64>"
+using "cd .\backend\pocketbase_0.35.1_windows_amd64\"
+Start the databse using "./pocketbase serve"
+
+2. Main Server:
+
+Navigate to "C:\Users\hive-2019\Desktop\lmu-ma-squishy-v2\backend\server>"
+using "cd \backend\server"
+then start the virtual enviroment using:
+".\venv\Scripts\Activate"
+
+Now start the main server:
+"python run_server.py"
+
+
+Stop Main Server with "Strg + C"
+Restart main Server with "python run_server.py" (on need to activate venv again)
+
+
+3. Frontend:
+Navigate to "C:\Users\hive-2019\Desktop\lmu-ma-squishy-v2\frontend>"
+using "cd frontend"
+Now start the frontend unsing: "npm run dev"
+
+The ip shown that starts with "10.XX..." is the one inside the private "HACUM" network.
+
+
+
+---------------------------------
+
+
+
+
 # Old Version of the ReadMe: pre gemini Live APi and Websockets!
 
 First we need to start pocketbase inside the backend/pocketbase folder with the command:
